@@ -89,7 +89,7 @@ static const struct ng_parse_type ng_route_tuple4_type = {
   &ng_route_tuple4_fields
 };
 
-// Anything for IPv6
+// Anything for IPv6 tuple
 static int
   ng_route_tuple6_getLength(const struct ng_parse_type *type,
           const u_char *start, const u_char *buf)
@@ -101,9 +101,9 @@ static const struct ng_parse_type ng_route_ip6addr_type = {
   &ng_route_tuple6_getLength
 };
 struct ng_parse_struct_info ng_route_tuple6_fields = {
-  { "addr",	&ng_route_ip6addr_type   },
-  { "mask",	&ng_route_ip6addr_type   },
-  { "value",	&ng_parse_int32_type    },
+  { "addr",	&ng_route_ip6addr_type },
+  { "mask",	&ng_route_ip6addr_type },
+  { "value",	&ng_parse_int32_type   },
   { NULL }
 };
 static const struct ng_parse_type ng_route_tuple6_type = {
@@ -111,21 +111,67 @@ static const struct ng_parse_type ng_route_tuple6_type = {
   &ng_route_tuple6_fields
 };
 
+/* Type for flags structure
+ */
+struct ng_parse_struct_info ng_route_flags_fields = {
+  /* indicating matching direction: source (1) or destination (0) address */
+  { "direct",	&ng_parse_int8_type },
+  { NULL }
+};
+static const struct ng_parse_type ng_route_flags_type = {
+  &ng_parse_struct_type,
+  &ng_route_flags_fields
+};
 
 /* List of commands and how to convert arguments to/from ASCII */
 static const struct ng_cmdlist ng_route_cmdlist[] = {
   {
     NGM_ROUTE_COOKIE,
-    NGM_ROUTE_GET_STATUS,
-    "getstatus",
+    NGM_ROUTE_ADD4,
+    "add4",
+    &ng_route_tuple4_type,
     NULL,
-    &ng_route_stat_type,
   },
   {
     NGM_ROUTE_COOKIE,
-    NGM_ROUTE_SET_FLAG,
-    "setflag",
-    &ng_parse_int32_type,
+    NGM_ROUTE_ADD6,
+    "add6",
+    &ng_route_tuple6_type,
+    NULL
+  },
+  {
+    NGM_ROUTE_COOKIE,
+    NGM_ROUTE_DEL4,
+    "del4",
+    &ng_route_tuple4_type,
+    NULL,
+  },
+  {
+    NGM_ROUTE_COOKIE,
+    NGM_ROUTE_DEL6,
+    "del6",
+    &ng_route_tuple6_type,
+    NULL
+  },
+    {
+    NGM_ROUTE_COOKIE,
+    NGM_ROUTE_PRINT,
+    "print",
+    NULL
+    NULL, /* TODO: make struct of 2 arrays (for v4 and v6) here */
+  },
+  {
+    NGM_ROUTE_COOKIE,
+    NGM_ROUTE_FLUSH,
+    "flush",
+    NULL,
+    NULL,
+  },
+  {
+    NGM_ROUTE_COOKIE,
+    NGM_ROUTE_SETFLAGS,
+    "setflags",
+    &ng_route_flags_type,
     NULL
   },
   { 0 }

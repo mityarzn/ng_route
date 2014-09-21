@@ -63,24 +63,26 @@ enum {
   NGM_ROUTE_DEL6,
   NGM_ROUTE_PRINT,
   NGM_ROUTE_FLUSH,
-  NGM_ROUTE_DIRECT,
+  NGM_ROUTE_SETFLAGS,
 };
 
 /* Internal type for IPv4 routing table */
-struct ng_tuple4 {
+struct ng_route_tuple4 {
   struct sockaddr_in 	addr;
   struct sockaddr_in 	mask;
   u_int32_t	value;
 };
 
 /* Internal type for IPv6 routing table */
-struct ng_tuple6 {
+struct ng_route_tuple6 {
   struct sockaddr_in6	addr;
   struct sockaddr_in6	mask;
   u_int32_t	value;
 };
   
-
+struct ng_route_flags {
+  int8_t direct;
+}
 /* No stats here
  */
 #endif /* _NETGRAPH_NG_ROUTE_H_ */
