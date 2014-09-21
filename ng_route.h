@@ -53,7 +53,6 @@
 /* Hook names */
 #define NG_ROUTE_HOOK_UP	"up"
 #define NG_ROUTE_HOOK_DOWN	"down"
-#define NG_ROUTE_HOOK_NOTFOUND	"default"
 
 /* Netgraph commands understood by this node type */
 enum {

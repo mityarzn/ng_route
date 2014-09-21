@@ -63,6 +63,23 @@ static MALLOC_DEFINE(M_NETGRAPH_ROUTE, "netgraph_route", "netgraph route node");
 #define M_NETGRAPH_ROUTE M_NETGRAPH
 #endif
 
+#define NG_ROUTE_MAX_UPLINKS 1048576 /* It results in 8-megabyte (x86_64) array
+				      * in node's private info. That's many,
+				      * maybe we shold move it to hashtable. */
+/* Next 8 #defines was fully copied from ip_fw_table.c */
+#define KEY_LEN(v)      *((uint8_t *)&(v))
+#define KEY_OFS         (8*offsetof(struct sockaddr_in, sin_addr))
+/*
+ * Do not require radix to compare more than actual IPv4/IPv6 address
+ */
+#define KEY_LEN_INET    (offsetof(struct sockaddr_in, sin_addr) + sizeof(in_addr_t))
+#define KEY_LEN_INET6   (offsetof(struct sockaddr_in6, sin6_addr) + sizeof(struct in6_addr))
+#define KEY_LEN_IFACE   (offsetof(struct xaddr_iface, ifname))
+                        
+#define OFF_LEN_INET    (8 * offsetof(struct sockaddr_in, sin_addr))
+#define OFF_LEN_INET6   (8 * offsetof(struct sockaddr_in6, sin6_addr))
+#define OFF_LEN_IFACE   (8 * offsetof(struct xaddr_iface, ifname))
+
 /*
  * This section contains the netgraph method declarations for the
  * sample node. These methods define the netgraph 'type'.
@@ -193,22 +210,24 @@ static struct ng_type typestruct = {
 };
 NETGRAPH_INIT(route, &typestruct);
 
-/* Information we store for each hook on each node */
-struct route_hookinfo {
+/* 
+ * Information we store for each hook on each node
+ * We don't really need it now, but there may be some stats in future
+ */
+struct ng_route_hookinfo {
   hook_p	hook;
 };
 
 /* Information we store for each node */
-struct XXX {
-  struct XXX_hookinfo channel[XXX_NUM_DLCIS];
-  struct XXX_hookinfo downstream_hook;
-  node_p		node;		/* back pointer to node */
-  hook_p  	debughook;
-  u_int   	packets_in;	/* packets in from downstream */
-  u_int   	packets_out;	/* packets out towards downstream */
-  u_int32_t	flags;
+struct ng_route {
+  struct 	 ng_route_hookinfo up[NG_ROUTE_MAX_UPLINKS];
+  struct 	 ng_route_hookinfo down;
+  node_p	 node;		/* back pointer to node */
+  ng_route_flags flags;
+  struct radix_node_head *table4;
+  struct radix_node_head *table6;
 };
-typedef struct XXX *xxx_p;
+typedef struct ng_route *ng_route_p;
 
 /*
  * Allocate the private data structure. The generic node has already
@@ -222,20 +241,34 @@ typedef struct XXX *xxx_p;
 static int
 ng_route_constructor(node_p node)
 {
-  xxx_p privdata;
+  ng_route_p privdata;
   int i;
   
-  /* Initialize private descriptor */
-  privdata = malloc(sizeof(*privdata), M_NETGRAPH, M_WAITOK | M_ZERO);
-  for (i = 0; i < XXX_NUM_DLCIS; i++) {
-    privdata->channel[i].dlci = -2;
-    privdata->channel[i].channel = i;
-  }
-  
+  /* Initialize private descriptors */
+  privdata = malloc(sizeof(*privdata), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
+  if (privdata == NULL) goto init_error;
+  table4 = malloc(sizeof(*table4), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
+  if (table4 == NULL) goto init_error;
+  table6 = malloc(sizeof(*table6), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
+  if (table6 == NULL) goto init_error;
+
+  /* Init tables */
+  if (!rn_inithead((void **)&table4, OFF_LEN_INET4) || 
+      !rn_inithead((void **)&table6, OFF_LEN_INET6)) 
+	goto init_error;
   /* Link structs together; this counts as our one reference to *nodep */
   NG_NODE_SET_PRIVATE(node, privdata);
   privdata->node = node;
   return (0);
+  
+init_error:
+  if (privdata != NULL)
+    free(privdata,M_NETGRAPH_ROUTE);
+  if (table4 != NULL)
+    free(table4,M_NETGRAPH_ROUTE);
+  if (table6 != NULL)
+    free(table6,M_NETGRAPH_ROUTE);
+  return (ENOMEM);
 }
 
 /*
@@ -243,72 +276,40 @@ ng_route_constructor(node_p node)
  * If we are not running this might kick a device into life.
  * Possibly decode information out of the hook name.
  * Add the hook's private info to the hook structure.
- * (if we had some). In this example, we assume that there is a
- * an array of structs, called 'channel' in the private info,
- * one for each active channel. The private
- * pointer of each hook points to the appropriate XXX_hookinfo struct
- * so that the source of an input packet is easily identified.
- * (a dlci is a frame relay channel)
+ * (if we had some).
  */
 static int
 ng_route_newhook(node_p node, hook_p hook, const char *name)
 {
-  const xxx_p xxxp = NG_NODE_PRIVATE(node);
+  const ng_route_p ng_routep = NG_NODE_PRIVATE(node);
   const char *cp;
-  int dlci = 0;
-  int chan;
+  int link = 0;
   
-  #if 0
-  /* Possibly start up the device if it's not already going */
-  if ((xxxp->flags & SCF_RUNNING) == 0) {
-    ng_route_start_hardware(xxxp);
-}
-#endif
+  /* Example of how one might use hooks with embedded numbers: All
+   * hooks start with 'dlci' and have a decimal trailing channel
+   * number up to 4 digits Use the leadin defined int he associated .h
+   * file. */
+  if (strncmp(name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0) {
+    char *eptr;
+  
+    cp = name + strlen(NG_ROUTE_HOOK_UP);
+    if (!isdigit(*cp))
+      return (EINVAL);
+    link = (int)strtoul(cp, &eptr, 10);
+    if (*eptr != '\0' || link < 0 || link >= NG_ROUTE_MAX_UPLINKS)
+      return (EINVAL);
 
-/* Example of how one might use hooks with embedded numbers: All
- * hooks start with 'dlci' and have a decimal trailing channel
- * number up to 4 digits Use the leadin defined int he associated .h
- * file. */
-if (strncmp(name,
-  NG_ROUTE_HOOK_DLCI_LEADIN, strlen(NG_ROUTE_HOOK_DLCI_LEADIN)) == 0) {
-  char *eptr;
-
-cp = name + strlen(NG_ROUTE_HOOK_DLCI_LEADIN);
-if (!isdigit(*cp) || (cp[0] == '0' && cp[1] != '\0'))
-  return (EINVAL);
-dlci = (int)strtoul(cp, &eptr, 10);
-if (*eptr != '\0' || dlci < 0 || dlci > 1023)
-  return (EINVAL);
-
-/* We have a dlci, now either find it, or allocate it */
-for (chan = 0; chan < XXX_NUM_DLCIS; chan++)
-  if (xxxp->channel[chan].dlci == dlci)
-    break;
-  if (chan == XXX_NUM_DLCIS) {
-    for (chan = 0; chan < XXX_NUM_DLCIS; chan++)
-      if (xxxp->channel[chan].dlci == -2)
-	break;
-      if (chan == XXX_NUM_DLCIS)
-	return (ENOBUFS);
-      xxxp->channel[chan].dlci = dlci;
-  }
-  if (xxxp->channel[chan].hook != NULL)
-    return (EADDRINUSE);
-  NG_HOOK_SET_PRIVATE(hook, xxxp->channel + chan);
-  xxxp->channel[chan].hook = hook;
-  return (0);
-  } else if (strcmp(name, NG_ROUTE_HOOK_DOWNSTREAM) == 0) {
+    ng_routep->up[link].hook = hook;
+    NG_HOOK_SET_PRIVATE(hook, ng_routep->up + link);
+    return (0);
+  } else if (strcmp(name, NG_ROUTE_HOOK_DOWN) == 0) {
     /* Example of simple predefined hooks. */
     /* do something specific to the downstream connection */
-    xxxp->downstream_hook.hook = hook;
-    NG_HOOK_SET_PRIVATE(hook, &xxxp->downstream_hook);
-  } else if (strcmp(name, NG_ROUTE_HOOK_DEBUG) == 0) {
-    /* do something specific to a debug connection */
-    xxxp->debughook = hook;
-    NG_HOOK_SET_PRIVATE(hook, NULL);
+    ng_routep->down.hook = hook;
+    NG_HOOK_SET_PRIVATE(hook, &ng_routep->down);
   } else
     return (EINVAL);	/* not a hook we know about */
-    return(0);
+  return(0);
 }
 
 /*
@@ -330,7 +331,7 @@ for (chan = 0; chan < XXX_NUM_DLCIS; chan++)
 static int
 ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 {
-  const xxx_p xxxp = NG_NODE_PRIVATE(node);
+  const ng_route_p xxxp = NG_NODE_PRIVATE(node);
   struct ng_mesg *resp = NULL;
   int error = 0;
   struct ng_mesg *msg;
@@ -396,7 +397,7 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 static int
 ng_route_rcvdata(hook_p hook, item_p item )
 {
-  const xxx_p xxxp = NG_NODE_PRIVATE(NG_HOOK_NODE(hook));
+  const ng_route_p xxxp = NG_NODE_PRIVATE(NG_HOOK_NODE(hook));
   int chan = -2;
   int dlci = -2;
   int error;
@@ -469,7 +470,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
 static int
 ng_route_shutdown(node_p node)
 {
-  const xxx_p privdata = NG_NODE_PRIVATE(node);
+  const ng_route_p privdata = NG_NODE_PRIVATE(node);
   
   #ifndef PERSISTANT_NODE
   NG_NODE_SET_PRIVATE(node, NULL);
