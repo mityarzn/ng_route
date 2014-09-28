@@ -67,21 +67,35 @@ enum {
 
 /* Internal type for IPv4 routing table */
 struct ng_route_tuple4 {
-  struct sockaddr_in 	addr;
-  struct sockaddr_in 	mask;
+  struct in_addr 	addr;
+  struct in_addr 	mask;
   u_int32_t	value;
 };
 
 /* Internal type for IPv6 routing table */
 struct ng_route_tuple6 {
-  struct sockaddr_in6	addr;
-  struct sockaddr_in6	mask;
+  struct in6_addr	addr;
+  struct in6_addr	mask;
   u_int32_t	value;
 };
-  
+
 struct ng_route_flags {
   int8_t direct;
 }
+
+struct ng_route_entry {
+  struct radix_node	rn[2];
+  union {
+    struct sockaddr_in	addr4;
+    struct sockaddr_in6	addr6;
+  } a;
+    union {
+    struct sockaddr_in	addr4;
+    struct sockaddr_in6	addr6;
+  } m;
+  u_int32_t	value;
+}
+
 /* No stats here
  */
 #endif /* _NETGRAPH_NG_ROUTE_H_ */

@@ -285,10 +285,6 @@ ng_route_newhook(node_p node, hook_p hook, const char *name)
   const char *cp;
   int link = 0;
   
-  /* Example of how one might use hooks with embedded numbers: All
-   * hooks start with 'dlci' and have a decimal trailing channel
-   * number up to 4 digits Use the leadin defined int he associated .h
-   * file. */
   if (strncmp(name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0) {
     char *eptr;
   
@@ -310,28 +306,12 @@ ng_route_newhook(node_p node, hook_p hook, const char *name)
   } else
     return (EINVAL);	/* not a hook we know about */
   return(0);
-}
+} 
 
-/*
- * Get a netgraph control message.
- * We actually recieve a queue item that has a pointer to the message.
- * If we free the item, the message will be freed too, unless we remove
- * it from the item using NGI_GET_MSG();
- * The return address is also stored in the item, as an ng_ID_t,
- * accessible as NGI_RETADDR(item);
- * Check it is one we understand. If needed, send a response.
- * We could save the address for an async action later, but don't here.
- * Always free the message.
- * The response should be in a malloc'd region that the caller can 'free'.
- * A response is not required.
- * Theoretically you could respond defferently to old message types if
- * the cookie in the header didn't match what we consider to be current
- * (so that old userland programs could continue to work).
- */
 static int
 ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 {
-  const ng_route_p xxxp = NG_NODE_PRIVATE(node);
+  const ng_route_p ng_routep = NG_NODE_PRIVATE(node);
   struct ng_mesg *resp = NULL;
   int error = 0;
   struct ng_mesg *msg;
@@ -341,6 +321,14 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
   switch (msg->header.typecookie) {
     case NGM_ROUTE_COOKIE:
       switch (msg->header.cmd) {
+	case NGM_ROUTE_ADD4:
+	{
+	  ng_table_add_entry(ng_routep->table4, msg->data, 4);
+	}
+	case NGM_ROUTE_ADD6:
+	{
+	  ng_table_add_entry(ng_routep->table6, msg->data, 6);
+	}
 	case NGM_ROUTE_GET_STATUS:
 	{
 	  struct ngxxxstat *stats;
@@ -351,8 +339,8 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	    break;
 	  }
 	  stats = (struct ngxxxstat *) resp->data;
-	  stats->packets_in = xxxp->packets_in;
-	  stats->packets_out = xxxp->packets_out;
+	  stats->packets_in = ng_routep->packets_in;
+	  stats->packets_out = ng_routep->packets_out;
 	  break;
 	}
 	case NGM_ROUTE_SET_FLAG:
@@ -360,7 +348,7 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	    error = EINVAL;
 	    break;
 	  }
-	  xxxp->flags = *((u_int32_t *) msg->data);
+	  ng_routep->flags = *((u_int32_t *) msg->data);
 	  break;
 	default:
 	  error = EINVAL;		/* unknown command */
@@ -397,7 +385,7 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 static int
 ng_route_rcvdata(hook_p hook, item_p item )
 {
-  const ng_route_p xxxp = NG_NODE_PRIVATE(NG_HOOK_NODE(hook));
+  const ng_route_p ng_routep = NG_NODE_PRIVATE(NG_HOOK_NODE(hook));
   int chan = -2;
   int dlci = -2;
   int error;
@@ -415,14 +403,14 @@ ng_route_rcvdata(hook_p hook, item_p item )
       /* M_PREPEND(....)	; */
       /* mtod(m, xxxxxx)->dlci = dlci; */
       NG_FWD_NEW_DATA(error, item,
-		      xxxp->downstream_hook.hook, m);
-      xxxp->packets_out++;
+		      ng_routep->downstream_hook.hook, m);
+      ng_routep->packets_out++;
     } else {
       /* data came from the multiplexed link */
       dlci = 1;	/* get dlci from header */
       /* madjust(....) *//* chop off header */
       for (chan = 0; chan < XXX_NUM_DLCIS; chan++)
-	if (xxxp->channel[chan].dlci == dlci)
+	if (ng_routep->channel[chan].dlci == dlci)
 	  break;
 	if (chan == XXX_NUM_DLCIS) {
 	  NG_FREE_ITEM(item);
@@ -441,12 +429,12 @@ ng_route_rcvdata(hook_p hook, item_p item )
 	 * these are run 'm' should be considered
 	 * as invalid and NG_SEND_DATA actually zaps them. */
 	NG_FWD_NEW_DATA(error, item,
-			xxxp->channel[chan].hook, m);
-	xxxp->packets_in++;
+			ng_routep->channel[chan].hook, m);
+	ng_routep->packets_in++;
     }
   } else {
     /* It's the debug hook, throw it away.. */
-    if (hook == xxxp->downstream_hook.hook) {
+    if (hook == ng_routep->downstream_hook.hook) {
       NG_FREE_ITEM(item);
       NG_FREE_M(m);
     }
@@ -530,22 +518,73 @@ ng_route_connect(hook_p hook)
   #endif
   /* otherwise be really amiable and just say "YUP that's OK by me! " */
   return (0);
+}
+
+/*
+ * Hook disconnection
+ *
+ * For this type, removal of the last link destroys the node
+ */
+static int
+ng_route_disconnect(hook_p hook)
+{
+  if (NG_HOOK_PRIVATE(hook))
+    ((struct XXX_hookinfo *) (NG_HOOK_PRIVATE(hook)))->hook = NULL;
+  if ((NG_NODE_NUMHOOKS(NG_HOOK_NODE(hook)) == 0)
+    && (NG_NODE_IS_VALID(NG_HOOK_NODE(hook)))) /* already shutting down? */
+  ng_rmnode_self(NG_HOOK_NODE(hook));
+  return (0);
+}
+
+/*
+ * Here begins routing table utility functions.
+ */
+
+/* Aadd entry */
+int
+ng_table_add_entry(radix_node_head *rnh, void *entry, int type)
+{
+  struct ng_route_entry *ent = malloc(sizeof(*ent), M_IPFW_TBL, M_WAITOK | M_ZERO);
+  struct radix_node *rn;
+  struct sockaddr *addr_ptr, *mask_ptr;
+  char c;
+  
+  switch (type) {
+    case 4:
+      KEY_LEN(ent->a.addr4) = KEY_LEN_INET;
+      KEY_LEN(ent->m.mask4) = KEY_LEN_INET;
+      struct ng_route_tuple4 * newent = entry;
+      ent->a.addr4.sin_addr = newent->addr.sin_addr;
+      ent->m.mask4.sin_addr = newent->mask.sin_addr;
+      ent->value = newent->value;
+      addr_ptr = &ent->a.addr4;
+      mask_ptr = &ent->m.mask4;
+      break;
+      
+    case 6:
+      KEY_LEN(ent->a.addr6) = KEY_LEN_INET6;
+      KEY_LEN(ent->m.mask6) = KEY_LEN_INET6;
+      struct ng_route_tuple6 * newent = entry;
+      memcpy(&ent->a.addr6.sin6_addr, &newent->addr6.sin6_addr,
+	     sizeof(newent->addr6));
+      memcpy(&ent->m.mask6.sin6_addr, &newent->mask6.sin6_addr, 
+	     sizeof(newent->mask6));
+      ent->value = newent->value;
+      addr_ptr = &ent->a.addr6;
+      mask_ptr = &ent->m.mask6;
+      break;
+      
+    default:
+      return (EINVAL);
   }
   
-  /*
-   * Hook disconnection
-   *
-   * For this type, removal of the last link destroys the node
-   */
-  static int
-  ng_route_disconnect(hook_p hook)
-  {
-    if (NG_HOOK_PRIVATE(hook))
-      ((struct XXX_hookinfo *) (NG_HOOK_PRIVATE(hook)))->hook = NULL;
-    if ((NG_NODE_NUMHOOKS(NG_HOOK_NODE(hook)) == 0)
-      && (NG_NODE_IS_VALID(NG_HOOK_NODE(hook)))) /* already shutting down? */
-      ng_rmnode_self(NG_HOOK_NODE(hook));
-    return (0);
+  rn = rnh->rnh_addaddr(addr_ptr, mask_ptr, rnh, (void *) ent);
+  if (rn == NULL) {
+    free(ent_ptr, M_IPFW_TBL);
+    return (EEXIST);
   }
-  
-  
+  return (0);
+}
+
+
+
