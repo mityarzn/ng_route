@@ -323,34 +323,35 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
       switch (msg->header.cmd) {
 	case NGM_ROUTE_ADD4:
 	{
-	  ng_table_add_entry(ng_routep->table4, msg->data, 4);
+	  error = ng_table_add_entry(ng_routep->table4, msg->data, 4);
+          break;
 	}
 	case NGM_ROUTE_ADD6:
 	{
-	  ng_table_add_entry(ng_routep->table6, msg->data, 6);
+	  error = ng_table_add_entry(ng_routep->table6, msg->data, 6);
+          break;
 	}
         case NGM_ROUTE_DEL4:
         {
-          ng_table_del_entry(ng_routep->table4, msg->data, 4);
+          error = ng_table_del_entry(ng_routep->table4, msg->data, 4);
+          break;
         }
         case NGM_ROUTE_DEL6:
         {
-          ng_table_del_entry(ng_routep->table6, msg->data, 6);
+          error = ng_table_del_entry(ng_routep->table6, msg->data, 6);
+          break;
         }
-	case NGM_ROUTE_GET_STATUS:
-	{
-	  struct ngxxxstat *stats;
-
-	  NG_MKRESPONSE(resp, msg, sizeof(*stats), M_NOWAIT);
-	  if (!resp) {
-	    error = ENOMEM;
-	    break;
-	  }
-	  stats = (struct ngxxxstat *) resp->data;
-	  stats->packets_in = ng_routep->packets_in;
-	  stats->packets_out = ng_routep->packets_out;
-	  break;
-	}
+        case NGM_ROUTE_PRINT:
+        {
+          /*dummy*/
+          break;
+        }
+        case NGM_ROUTE_FLUSH:
+        {
+          if (error = ipfw_flush_table(ng_routep->table4)) break;
+          error = ipfw_flush_table(ng_routep->table6);
+          break;
+        }
 	case NGM_ROUTE_SET_FLAG:
 	  if (msg->header.arglen != sizeof(u_int32_t)) {
 	    error = EINVAL;
@@ -613,4 +614,25 @@ ng_table_del_entry(radix_node_head *rnh, void *entry, int type)
 
 }
 
+static int
+flush_table_entry(struct radix_node *rn, void *arg)
+{
+        struct radix_node_head * const rnh = arg;
+        struct table_entry *ent;
 
+        ent = (struct table_entry *)
+            rnh->rnh_deladdr(rn->rn_key, rn->rn_mask, rnh);
+        if (ent != NULL)
+                free(ent, M_NETGRAPH_ROUTE);
+        return (0);
+}
+
+int
+ipfw_flush_table(radix_node_head *rnh)
+{
+        if (rnh != NULL) {
+                rnh->rnh_walktree(rnh, flush_table_entry, rnh);
+        }
+
+        return (0);
+}
