@@ -5,7 +5,7 @@
 /*-
  * Copyright (c) 1996-1999 Whistle Communications, Inc.
  * All rights reserved.
- * 
+ *
  * Subject to the following obligations and disclaimer of warranty, use and
  * redistribution of this software, in source or object code forms, with or
  * without modifications are expressly permitted by Whistle Communications;
@@ -16,7 +16,7 @@
  *    Communications, Inc. trademarks, including the mark "WHISTLE
  *    COMMUNICATIONS" on advertising, endorsements, or otherwise except as
  *    such appears in the above copyright notice or in the software.
- * 
+ *
  * THIS SOFTWARE IS BEING PROVIDED BY WHISTLE COMMUNICATIONS "AS IS", AND
  * TO THE MAXIMUM EXTENT PERMITTED BY LAW, WHISTLE COMMUNICATIONS MAKES NO
  * REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, REGARDING THIS SOFTWARE,
@@ -75,7 +75,7 @@ static MALLOC_DEFINE(M_NETGRAPH_ROUTE, "netgraph_route", "netgraph route node");
 #define KEY_LEN_INET    (offsetof(struct sockaddr_in, sin_addr) + sizeof(in_addr_t))
 #define KEY_LEN_INET6   (offsetof(struct sockaddr_in6, sin6_addr) + sizeof(struct in6_addr))
 #define KEY_LEN_IFACE   (offsetof(struct xaddr_iface, ifname))
-                        
+
 #define OFF_LEN_INET    (8 * offsetof(struct sockaddr_in, sin_addr))
 #define OFF_LEN_INET6   (8 * offsetof(struct sockaddr_in6, sin6_addr))
 #define OFF_LEN_IFACE   (8 * offsetof(struct xaddr_iface, ifname))
@@ -210,7 +210,7 @@ static struct ng_type typestruct = {
 };
 NETGRAPH_INIT(route, &typestruct);
 
-/* 
+/*
  * Information we store for each hook on each node
  * We don't really need it now, but there may be some stats in future
  */
@@ -243,7 +243,7 @@ ng_route_constructor(node_p node)
 {
   ng_route_p privdata;
   int i;
-  
+
   /* Initialize private descriptors */
   privdata = malloc(sizeof(*privdata), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
   if (privdata == NULL) goto init_error;
@@ -253,14 +253,14 @@ ng_route_constructor(node_p node)
   if (table6 == NULL) goto init_error;
 
   /* Init tables */
-  if (!rn_inithead((void **)&table4, OFF_LEN_INET4) || 
-      !rn_inithead((void **)&table6, OFF_LEN_INET6)) 
+  if (!rn_inithead((void **)&table4, OFF_LEN_INET4) ||
+      !rn_inithead((void **)&table6, OFF_LEN_INET6))
 	goto init_error;
   /* Link structs together; this counts as our one reference to *nodep */
   NG_NODE_SET_PRIVATE(node, privdata);
   privdata->node = node;
   return (0);
-  
+
 init_error:
   if (privdata != NULL)
     free(privdata,M_NETGRAPH_ROUTE);
@@ -284,10 +284,10 @@ ng_route_newhook(node_p node, hook_p hook, const char *name)
   const ng_route_p ng_routep = NG_NODE_PRIVATE(node);
   const char *cp;
   int link = 0;
-  
+
   if (strncmp(name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0) {
     char *eptr;
-  
+
     cp = name + strlen(NG_ROUTE_HOOK_UP);
     if (!isdigit(*cp))
       return (EINVAL);
@@ -306,7 +306,7 @@ ng_route_newhook(node_p node, hook_p hook, const char *name)
   } else
     return (EINVAL);	/* not a hook we know about */
   return(0);
-} 
+}
 
 static int
 ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
@@ -315,7 +315,7 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
   struct ng_mesg *resp = NULL;
   int error = 0;
   struct ng_mesg *msg;
-  
+
   NGI_GET_MSG(item, msg);
   /* Deal with message according to cookie and command */
   switch (msg->header.typecookie) {
@@ -329,10 +329,18 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	{
 	  ng_table_add_entry(ng_routep->table6, msg->data, 6);
 	}
+        case NGM_ROUTE_DEL4:
+        {
+          ng_table_del_entry(ng_routep->table4, msg->data, 4);
+        }
+        case NGM_ROUTE_DEL6:
+        {
+          ng_table_del_entry(ng_routep->table6, msg->data, 6);
+        }
 	case NGM_ROUTE_GET_STATUS:
 	{
 	  struct ngxxxstat *stats;
-	  
+
 	  NG_MKRESPONSE(resp, msg, sizeof(*stats), M_NOWAIT);
 	  if (!resp) {
 	    error = ENOMEM;
@@ -359,7 +367,7 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	  error = EINVAL;			/* unknown cookie type */
 	  break;
   }
-  
+
   /* Take care of synchronous response, if any */
   NG_RESPOND_MSG(error, node, item, resp);
   /* Free the message and return */
@@ -390,7 +398,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
   int dlci = -2;
   int error;
   struct mbuf *m;
-  
+
   NGI_GET_M(item, m);
   if (NG_HOOK_PRIVATE(hook)) {
     dlci = ((struct XXX_hookinfo *) NG_HOOK_PRIVATE(hook))->dlci;
@@ -459,7 +467,7 @@ static int
 ng_route_shutdown(node_p node)
 {
   const ng_route_p privdata = NG_NODE_PRIVATE(node);
-  
+
   #ifndef PERSISTANT_NODE
   NG_NODE_SET_PRIVATE(node, NULL);
   NG_NODE_UNREF(node);
@@ -488,35 +496,6 @@ ng_route_shutdown(node_p node)
 static int
 ng_route_connect(hook_p hook)
 {
-  #if 0
-  /*
-   * If we were a driver running at other than splnet then
-   * we should set the QUEUE bit on the edge so that we
-   * will deliver by queing.
-   */
-  if /*it is the upstream hook */
-    NG_HOOK_FORCE_QUEUE(NG_HOOK_PEER(hook));
-  #endif
-  #if 0
-  /*
-   * If for some reason we want incoming date to be queued
-   * by the NETISR system and delivered later we can set the same bit on
-   * OUR hook. (maybe to allow unwinding of the stack)
-   */
-  
-  if (NG_HOOK_PRIVATE(hook)) {
-  int dlci;
-  /*
-   * If it's dlci 1023, requeue it so that it's handled
-   * at a lower priority. This is how a node decides to
-   * defer a data message.
-   */
-  dlci = ((struct XXX_hookinfo *) NG_HOOK_PRIVATE(hook))->dlci;
-  if (dlci == 1023) {
-  NG_HOOK_FORCE_QUEUE(hook);
-  }
-  #endif
-  /* otherwise be really amiable and just say "YUP that's OK by me! " */
   return (0);
 }
 
@@ -540,51 +519,98 @@ ng_route_disconnect(hook_p hook)
  * Here begins routing table utility functions.
  */
 
-/* Aadd entry */
+/* Add entry */
 int
 ng_table_add_entry(radix_node_head *rnh, void *entry, int type)
 {
-  struct ng_route_entry *ent = malloc(sizeof(*ent), M_IPFW_TBL, M_WAITOK | M_ZERO);
+  struct ng_route_entry *ent = malloc(sizeof(*ent), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
   struct radix_node *rn;
   struct sockaddr *addr_ptr, *mask_ptr;
   char c;
-  
+
   switch (type) {
     case 4:
       KEY_LEN(ent->a.addr4) = KEY_LEN_INET;
       KEY_LEN(ent->m.mask4) = KEY_LEN_INET;
-      struct ng_route_tuple4 * newent = entry;
+      struct ng_route_tuple4 *newent = entry;
       ent->a.addr4.sin_addr = newent->addr.sin_addr;
       ent->m.mask4.sin_addr = newent->mask.sin_addr;
       ent->value = newent->value;
       addr_ptr = &ent->a.addr4;
       mask_ptr = &ent->m.mask4;
       break;
-      
+
     case 6:
       KEY_LEN(ent->a.addr6) = KEY_LEN_INET6;
       KEY_LEN(ent->m.mask6) = KEY_LEN_INET6;
-      struct ng_route_tuple6 * newent = entry;
-      memcpy(&ent->a.addr6.sin6_addr, &newent->addr6.sin6_addr,
+      struct ng_route_tuple6 *newent = entry;
+      memcpy(&ent->a.addr6.sin6_addr, &newent->addr.sin6_addr,
 	     sizeof(newent->addr6));
-      memcpy(&ent->m.mask6.sin6_addr, &newent->mask6.sin6_addr, 
+      memcpy(&ent->m.mask6.sin6_addr, &newent->mask.sin6_addr,
 	     sizeof(newent->mask6));
       ent->value = newent->value;
       addr_ptr = &ent->a.addr6;
       mask_ptr = &ent->m.mask6;
       break;
-      
+
     default:
       return (EINVAL);
   }
-  
+
   rn = rnh->rnh_addaddr(addr_ptr, mask_ptr, rnh, (void *) ent);
   if (rn == NULL) {
-    free(ent_ptr, M_IPFW_TBL);
+    free(ent_ptr, M_NETGRAPH_ROUTE);
     return (EEXIST);
   }
   return (0);
 }
 
+/* Delete entry */
+int
+ng_table_del_entry(radix_node_head *rnh, void *entry, int type)
+{
+  struct ng_route_entry *ent;
+  struct sockaddr_in    addr4, mask4;
+  struct sockaddr_in6   addr6, mask6;
+  struct radix_node *rn;
+  struct sockaddr *addr_ptr, *mask_ptr;
+  char c;
+
+  switch (type) {
+    case 4:
+      KEY_LEN(addr4) = KEY_LEN_INET;
+      KEY_LEN(mask4) = KEY_LEN_INET;
+      struct ng_route_tuple4 *newent = entry;
+      addr4.sin_addr = newent->addr.sin_addr;
+      mask4.sin_addr = newent->mask.sin_addr;
+      addr_ptr = &addr4;
+      mask_ptr = &mask4;
+      break;
+
+    case 6:
+      KEY_LEN(addr6) = KEY_LEN_INET6;
+      KEY_LEN(mask6) = KEY_LEN_INET6;
+      struct ng_route_tuple6 *newent = entry;
+      memcpy(&addr6.sin6_addr, &newent->addr.sin6_addr,
+             sizeof(newent->addr6));
+      memcpy(&mask6.sin6_addr, &newent->mask.sin6_addr,
+             sizeof(newent->mask6));
+      addr_ptr = &addr6;
+      mask_ptr = &mask6;
+      break;
+
+    default:
+      return (EINVAL);
+  }
+
+  ent = (struct ng_route_entry *)rnh->rnh_deladdr(sa_ptr, mask_ptr, rnh);
+
+  if (ent == NULL)
+    return (ESRCH);
+
+  free(ent, M_NETGRAPH_ROUTE);
+  return (0);
+
+}
 
 
