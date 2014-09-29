@@ -222,6 +222,7 @@ struct ng_route_hookinfo {
 struct ng_route {
   struct 	 ng_route_hookinfo up[NG_ROUTE_MAX_UPLINKS];
   struct 	 ng_route_hookinfo down;
+  struct         ng_route_hookinfo notmatch;
   node_p	 node;		/* back pointer to node */
   ng_route_flags flags;
   struct radix_node_head *table4;
@@ -299,10 +300,11 @@ ng_route_newhook(node_p node, hook_p hook, const char *name)
     NG_HOOK_SET_PRIVATE(hook, ng_routep->up + link);
     return (0);
   } else if (strcmp(name, NG_ROUTE_HOOK_DOWN) == 0) {
-    /* Example of simple predefined hooks. */
-    /* do something specific to the downstream connection */
     ng_routep->down.hook = hook;
     NG_HOOK_SET_PRIVATE(hook, &ng_routep->down);
+  } else if (strcmp(name, NG_ROUTE_HOOK_NOTMATCH) == 0) {
+    ng_routep->notmatch.hook = hook;
+    NG_HOOK_SET_PRIVATE(hook, &ng_routep->notmatch);
   } else
     return (EINVAL);	/* not a hook we know about */
   return(0);
@@ -353,11 +355,7 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
           break;
         }
 	case NGM_ROUTE_SET_FLAG:
-	  if (msg->header.arglen != sizeof(u_int32_t)) {
-	    error = EINVAL;
-	    break;
-	  }
-	  ng_routep->flags = *((u_int32_t *) msg->data);
+	  memcpy(&ng_routep->flags, msg->data, sizeof(struct ng_route_flags));
 	  break;
 	default:
 	  error = EINVAL;		/* unknown command */
@@ -376,79 +374,72 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
   return(error);
 }
 
-/*
- * Receive data, and do something with it.
- * Actually we receive a queue item which holds the data.
- * If we free the item it will also free the data unless we have
- * previously disassociated it using the NGI_GET_M() macro.
- * Possibly send it out on another link after processing.
- * Possibly do something different if it comes from different
- * hooks. The caller will never free m, so if we use up this data or
- * abort we must free it.
- *
- * If we want, we may decide to force this data to be queued and reprocessed
- * at the netgraph NETISR time.
- * We would do that by setting the HK_QUEUE flag on our hook. We would do that
- * in the connect() method.
- */
+
 static int
 ng_route_rcvdata(hook_p hook, item_p item )
 {
+  /* Node private data */
   const ng_route_p ng_routep = NG_NODE_PRIVATE(NG_HOOK_NODE(hook));
-  int chan = -2;
-  int dlci = -2;
-  int error;
+  /* Name of incoming hook */
+  char *hook_name = NG_HOOK_NAME(hook);
+  /* For outgoing hook */
+  char *out_hook;
+  int error = 0;
   struct mbuf *m;
+  struct ether_header *eh;
+  struct ip      *ip4hdr;
+  struct ip6_hdr *ip6hdr;
+  struct in_addr  *ip4addr;
+  struct in6_addr *ip6addr;
 
-  NGI_GET_M(item, m);
-  if (NG_HOOK_PRIVATE(hook)) {
-    dlci = ((struct XXX_hookinfo *) NG_HOOK_PRIVATE(hook))->dlci;
-    chan = ((struct XXX_hookinfo *) NG_HOOK_PRIVATE(hook))->channel;
-    if (dlci != -1) {
-      /* If received on a DLCI hook process for this
-       * channel and pass it to the downstream module.
-       * Normally one would add a multiplexing header at
-       * the front here */
-      /* M_PREPEND(....)	; */
-      /* mtod(m, xxxxxx)->dlci = dlci; */
-      NG_FWD_NEW_DATA(error, item,
-		      ng_routep->downstream_hook.hook, m);
-      ng_routep->packets_out++;
-    } else {
-      /* data came from the multiplexed link */
-      dlci = 1;	/* get dlci from header */
-      /* madjust(....) *//* chop off header */
-      for (chan = 0; chan < XXX_NUM_DLCIS; chan++)
-	if (ng_routep->channel[chan].dlci == dlci)
-	  break;
-	if (chan == XXX_NUM_DLCIS) {
-	  NG_FREE_ITEM(item);
-	  NG_FREE_M(m);
-	  return (ENETUNREACH);
-	}
-	/* If we were called at splnet, use the following:
-	 * NG_SEND_DATA_ONLY(error, otherhook, m); if this
-	 * node is running at some SPL other than SPLNET
-	 * then you should use instead: error =
-	 * ng_queueit(otherhook, m, NULL); m = NULL;
-	 * This queues the data using the standard NETISR
-	 * system and schedules the data to be picked
-	 * up again once the system has moved to SPLNET and
-	 * the processing of the data can continue. After
-	 * these are run 'm' should be considered
-	 * as invalid and NG_SEND_DATA actually zaps them. */
-	NG_FWD_NEW_DATA(error, item,
-			ng_routep->channel[chan].hook, m);
-	ng_routep->packets_in++;
+  if (strncmp(hook_name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0) {
+    /* Item coming from one of uplink nodes. Just forward it to downlink */
+    out_hook = ng_routep->down.hook;
+    /* We don't touch mbuf here, so just forward full item */
+    NG_FWD_ITEM_HOOK(error, item, out_hook);
+    return (0);
+  } else if (strcmp(hook_name, NG_ROUTE_HOOK_DOWN) == 0) {
+    /* Item came from downlink. We need to lookup table to find next hook */
+    NGI_GET_M(item, m);
+    /* Pulloup ether eader and ip header at once, because we almost certainly
+     * will use it all */
+    if (m->m_len < sizeof(struct ether_header+
+                     max(sizeof(struct ip),sizeof(struct ip6_hdr))) &&
+        (m = m_pullup(m, sizeof(struct ether_header) +
+                     max(sizeof(struct ip),sizeof(struct ip6_hdr)))) == NULL) {
+          error=ENOBUFS;
+          goto bad;
     }
+    eh = mtod(m, struct ether_header *);
+
+    /* Determine IP version and lookup corresponding table.
+     * Fallback to notmatch hook if not found in any table or not IP at all. */
+    switch (eh->ether_type) {
+      case ETHERTYPE_IP:
+        ip4hdr = mtod(m, struct ip *);
+        ip4addr = (ng_routep->flags.direct)?(&ip4hdr->ip_src):(&ip4hdr->ip_dst);
+
+        break;
+      case ETHERTYPE_IPV6:
+
+
+        break;
+      default:
+        /* Not IP or IPv6, send to special hook */
+        out_hook = ng_routep->notmatch.hook;
+    }
+    NG_FWD_NEW_DATA(error, item, out_hook, m);
+    return error; /* On error peer should take care of freeing things */
   } else {
-    /* It's the debug hook, throw it away.. */
-    if (hook == ng_routep->downstream_hook.hook) {
-      NG_FREE_ITEM(item);
-      NG_FREE_M(m);
-    }
-  }
-  return 0;
+
+    return (EINVAL);    /* not a hook we know about */
+
+
+
+bad:
+  NG_FREE_ITEM(item);
+  NG_FREE_M(m);
+  return error;
 }
 
 
@@ -604,7 +595,7 @@ ng_table_del_entry(radix_node_head *rnh, void *entry, int type)
       return (EINVAL);
   }
 
-  ent = (struct ng_route_entry *)rnh->rnh_deladdr(sa_ptr, mask_ptr, rnh);
+  ent = (struct ng_route_entry *)rnh->rnh_deladdr(addr_ptr, mask_ptr, rnh);
 
   if (ent == NULL)
     return (ESRCH);
@@ -635,4 +626,40 @@ ipfw_flush_table(radix_node_head *rnh)
         }
 
         return (0);
+}
+
+/* Table lookup */
+int
+ng_table_lookup(radix_node_head *rnh, void *addrp, int type, u_int32_t *val)
+{
+  struct ng_route_entry *ent;
+  struct sockaddr_in    addr4;
+  struct sockaddr_in6   addr6;
+  struct radix_node *rn;
+  struct sockaddr *addr_ptr, *mask_ptr;
+  char c;
+
+  switch (type) {
+    case 4:
+      KEY_LEN(addr4) = KEY_LEN_INET;
+      addr4.sin_addr = addrp;
+      addr_ptr = &addr4;
+      break;
+
+    case 6:
+      KEY_LEN(addr6) = KEY_LEN_INET6;
+      memcpy(&addr6.sin6_addr, addrp, sizeof(addr6.sin6_addr));
+      addr_ptr = &addr6;
+      break;
+
+    default:
+      return (EINVAL);
+  }
+  ent = (struct ng_route_entry *)(rnh->rnh_lookup(addr_ptr, NULL, rnh));
+
+  if (ent != NULL) {
+    *val = ent->value;
+    return (1);
+  }
+  return (0);
 }
