@@ -350,8 +350,8 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
         }
         case NGM_ROUTE_FLUSH:
         {
-          if (error = ipfw_flush_table(ng_routep->table4)) break;
-          error = ipfw_flush_table(ng_routep->table6);
+          if (error = ng_table_flush(ng_routep->table4)) break;
+          error = ng_table_flush(ng_routep->table6);
           break;
         }
 	case NGM_ROUTE_SET_FLAG:
@@ -389,10 +389,13 @@ ng_route_rcvdata(hook_p hook, item_p item )
   struct ether_header *eh;
   struct ip      *ip4hdr;
   struct ip6_hdr *ip6hdr;
-  struct in_addr  *ip4addr;
-  struct in6_addr *ip6addr;
+  void  *ipaddr;
 
-  if (strncmp(hook_name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0) {
+  u_int32_t num;
+
+  if (strncmp(hook_name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0 ||
+      strncmp(hook_name, NG_ROUTE_HOOK_NOTMATCH,
+              strlen(NG_ROUTE_HOOK_NOTMATCH)) == 0 ) {
     /* Item coming from one of uplink nodes. Just forward it to downlink */
     out_hook = ng_routep->down.hook;
     /* We don't touch mbuf here, so just forward full item */
@@ -401,9 +404,9 @@ ng_route_rcvdata(hook_p hook, item_p item )
   } else if (strcmp(hook_name, NG_ROUTE_HOOK_DOWN) == 0) {
     /* Item came from downlink. We need to lookup table to find next hook */
     NGI_GET_M(item, m);
-    /* Pulloup ether eader and ip header at once, because we almost certainly
-     * will use it all */
-    if (m->m_len < sizeof(struct ether_header+
+    /* Pullup ether and ip headers at once, because we almost certainly
+     * will use both */
+    if ( m->m_len < sizeof(struct ether_header+
                      max(sizeof(struct ip),sizeof(struct ip6_hdr))) &&
         (m = m_pullup(m, sizeof(struct ether_header) +
                      max(sizeof(struct ip),sizeof(struct ip6_hdr)))) == NULL) {
@@ -417,24 +420,37 @@ ng_route_rcvdata(hook_p hook, item_p item )
     switch (eh->ether_type) {
       case ETHERTYPE_IP:
         ip4hdr = mtod(m, struct ip *);
-        ip4addr = (ng_routep->flags.direct)?(&ip4hdr->ip_src):(&ip4hdr->ip_dst);
+        ipaddr = (ng_routep->flags.direct)?(&ip4hdr->ip_src):(&ip4hdr->ip_dst);
 
+        /* Lookup */
+        if (ng_table_lookup(ng_routep->table4, ipaddr, 4, &num)) {
+          out_hook = ng_routep->up[num].hook;
+        } else {
+          out_hook = ng_routep->notmatch.hook;
+        }
         break;
       case ETHERTYPE_IPV6:
-
-
+        ip6hdr = mtod(m, struct ip6_hdr *);
+        ipaddr = (ng_routep->flags.direct)?(&ip6hdr->ip6_src):(&ip6hdr->ip6_dst);
+        if (ng_table_lookup(ng_routep->table6, ipaddr, 6, &num)) {
+          out_hook = ng_routep->up[num].hook;
+        } else {
+          out_hook = ng_routep->notmatch.hook;
+        }
         break;
       default:
         /* Not IP or IPv6, send to special hook */
         out_hook = ng_routep->notmatch.hook;
     }
+    /* Check that output hook exists */
+    if (out_hook == NULL)
+      goto bad;
+
     NG_FWD_NEW_DATA(error, item, out_hook, m);
     return error; /* On error peer should take care of freeing things */
   } else {
-
     return (EINVAL);    /* not a hook we know about */
-
-
+  }
 
 bad:
   NG_FREE_ITEM(item);
@@ -459,25 +475,9 @@ static int
 ng_route_shutdown(node_p node)
 {
   const ng_route_p privdata = NG_NODE_PRIVATE(node);
-
-  #ifndef PERSISTANT_NODE
   NG_NODE_SET_PRIVATE(node, NULL);
   NG_NODE_UNREF(node);
   free(privdata, M_NETGRAPH);
-  #else
-  if (node->nd_flags & NGF_REALLY_DIE) {
-    /*
-     * WE came here because the widget card is being unloaded,
-     * so stop being persistant.
-     * Actually undo all the things we did on creation.
-     */
-    NG_NODE_SET_PRIVATE(node, NULL);
-    NG_NODE_UNREF(privdata->node);
-    free(privdata, M_NETGRAPH);
-    return (0);
-  }
-  NG_NODE_REVIVE(node);		/* tell ng_rmnode() we will persist */
-  #endif /* PERSISTANT_NODE */
   return (0);
 }
 
@@ -512,13 +512,12 @@ ng_route_disconnect(hook_p hook)
  */
 
 /* Add entry */
-int
+static int
 ng_table_add_entry(radix_node_head *rnh, void *entry, int type)
 {
   struct ng_route_entry *ent = malloc(sizeof(*ent), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
   struct radix_node *rn;
   struct sockaddr *addr_ptr, *mask_ptr;
-  char c;
 
   switch (type) {
     case 4:
@@ -551,20 +550,19 @@ ng_table_add_entry(radix_node_head *rnh, void *entry, int type)
 
   rn = rnh->rnh_addaddr(addr_ptr, mask_ptr, rnh, (void *) ent);
   if (rn == NULL) {
-    free(ent_ptr, M_NETGRAPH_ROUTE);
+    free(entd, M_NETGRAPH_ROUTE);
     return (EEXIST);
   }
   return (0);
 }
 
 /* Delete entry */
-int
+static int
 ng_table_del_entry(radix_node_head *rnh, void *entry, int type)
 {
   struct ng_route_entry *ent;
   struct sockaddr_in    addr4, mask4;
   struct sockaddr_in6   addr6, mask6;
-  struct radix_node *rn;
   struct sockaddr *addr_ptr, *mask_ptr;
   char c;
 
@@ -618,8 +616,8 @@ flush_table_entry(struct radix_node *rn, void *arg)
         return (0);
 }
 
-int
-ipfw_flush_table(radix_node_head *rnh)
+static int
+ng_table_flush(radix_node_head *rnh)
 {
         if (rnh != NULL) {
                 rnh->rnh_walktree(rnh, flush_table_entry, rnh);
@@ -629,20 +627,19 @@ ipfw_flush_table(radix_node_head *rnh)
 }
 
 /* Table lookup */
-int
+static int
 ng_table_lookup(radix_node_head *rnh, void *addrp, int type, u_int32_t *val)
 {
   struct ng_route_entry *ent;
   struct sockaddr_in    addr4;
   struct sockaddr_in6   addr6;
-  struct radix_node *rn;
-  struct sockaddr *addr_ptr, *mask_ptr;
+  struct sockaddr *addr_ptr;
   char c;
 
   switch (type) {
     case 4:
       KEY_LEN(addr4) = KEY_LEN_INET;
-      addr4.sin_addr = addrp;
+      addr4.sin_addr = *((struct  in_addr*) addrp);
       addr_ptr = &addr4;
       break;
 
