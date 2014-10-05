@@ -77,12 +77,12 @@ struct ng_route_tuple4 {
 struct ng_route_tuple6 {
   struct in6_addr	addr;
   struct in6_addr	mask;
-  u_int32_t	value;
+  uint32_t	value;
 };
 
 struct ng_route_flags {
   int8_t direct;
-}
+};
 
 struct ng_route_entry {
   struct radix_node	rn[2];
@@ -91,11 +91,11 @@ struct ng_route_entry {
     struct sockaddr_in6	addr6;
   } a;
     union {
-    struct sockaddr_in	addr4;
-    struct sockaddr_in6	addr6;
+    struct sockaddr_in	mask4;
+    struct sockaddr_in6	mask6;
   } m;
-  u_int32_t	value;
-}
+  uint32_t	value;
+};
 
 /* No stats here
  */

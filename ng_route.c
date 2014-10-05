@@ -49,11 +49,17 @@
 #include <sys/ctype.h>
 #include <sys/errno.h>
 #include <sys/syslog.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/ip6.h>
+#include <net/radix.h>
+#include <net/ethernet.h>
 
 #include <netgraph/ng_message.h>
 #include <netgraph/ng_parse.h>
 #include <netgraph/ng_sample.h>
 #include <netgraph/netgraph.h>
+#include "ng_route.h"
 
 /* If you do complicated mallocs you may want to do this */
 /* and use it for your mallocs */
@@ -81,10 +87,8 @@ static MALLOC_DEFINE(M_NETGRAPH_ROUTE, "netgraph_route", "netgraph route node");
 #define OFF_LEN_IFACE   (8 * offsetof(struct xaddr_iface, ifname))
 
 /*
- * This section contains the netgraph method declarations for the
- * sample node. These methods define the netgraph 'type'.
+ * Netgraph methods.
  */
-
 static ng_constructor_t	ng_route_constructor;
 static ng_rcvmsg_t	ng_route_rcvmsg;
 static ng_shutdown_t	ng_route_shutdown;
@@ -93,9 +97,21 @@ static ng_connect_t	ng_route_connect;
 static ng_rcvdata_t	ng_route_rcvdata;
 static ng_disconnect_t	ng_route_disconnect;
 
+/*
+ * Internal methods
+ */
+static int
+ng_table_lookup(struct radix_node_head *rnh, void *addrp, int type, u_int32_t *val);
+static int
+ng_table_flush(struct radix_node_head *rnh);
+static int
+ng_table_del_entry(struct radix_node_head *rnh, void *entry, int type);
+static int
+ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type);
+
 /* Parse types */
 // IPv4 tuple subtype and supertype
-struct ng_parse_struct_info ng_route_tuple4_fields = {
+struct ng_parse_struct_field ng_route_tuple4_fields[] = {
   { "addr",	&ng_parse_ipaddr_type   },
   { "mask",	&ng_parse_ipaddr_type   },
   { "value",	&ng_parse_int32_type    },
@@ -117,7 +133,7 @@ static const struct ng_parse_type ng_route_ip6addr_type = {
   &ng_parse_bytearray_type,
   &ng_route_tuple6_getLength
 };
-struct ng_parse_struct_info ng_route_tuple6_fields = {
+struct ng_parse_struct_field ng_route_tuple6_fields[] = {
   { "addr",	&ng_route_ip6addr_type },
   { "mask",	&ng_route_ip6addr_type },
   { "value",	&ng_parse_int32_type   },
@@ -130,7 +146,7 @@ static const struct ng_parse_type ng_route_tuple6_type = {
 
 /* Type for flags structure
  */
-struct ng_parse_struct_info ng_route_flags_fields = {
+struct ng_parse_struct_field ng_route_flags_fields[] = {
   /* indicating matching direction: source (1) or destination (0) address */
   { "direct",	&ng_parse_int8_type },
   { NULL }
@@ -174,7 +190,7 @@ static const struct ng_cmdlist ng_route_cmdlist[] = {
     NGM_ROUTE_COOKIE,
     NGM_ROUTE_PRINT,
     "print",
-    NULL
+    NULL,
     NULL, /* TODO: make struct of 2 arrays (for v4 and v6) here */
   },
   {
@@ -224,7 +240,7 @@ struct ng_route {
   struct 	 ng_route_hookinfo down;
   struct         ng_route_hookinfo notmatch;
   node_p	 node;		/* back pointer to node */
-  ng_route_flags flags;
+  struct ng_route_flags flags;
   struct radix_node_head *table4;
   struct radix_node_head *table6;
 };
@@ -243,19 +259,18 @@ static int
 ng_route_constructor(node_p node)
 {
   ng_route_p privdata;
-  int i;
 
   /* Initialize private descriptors */
   privdata = malloc(sizeof(*privdata), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
   if (privdata == NULL) goto init_error;
-  table4 = malloc(sizeof(*table4), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
-  if (table4 == NULL) goto init_error;
-  table6 = malloc(sizeof(*table6), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
-  if (table6 == NULL) goto init_error;
+  privdata->table4 = malloc(sizeof(struct radix_node_head), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
+  if (privdata->table4 == NULL) goto init_error;
+  privdata->table6 = malloc(sizeof(struct radix_node_head), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
+  if (privdata->table6 == NULL) goto init_error;
 
   /* Init tables */
-  if (!rn_inithead((void **)&table4, OFF_LEN_INET4) ||
-      !rn_inithead((void **)&table6, OFF_LEN_INET6))
+  if (!rn_inithead((void **)&privdata->table4, OFF_LEN_INET) ||
+      !rn_inithead((void **)&privdata->table6, OFF_LEN_INET6))
 	goto init_error;
   /* Link structs together; this counts as our one reference to *nodep */
   NG_NODE_SET_PRIVATE(node, privdata);
@@ -263,12 +278,12 @@ ng_route_constructor(node_p node)
   return (0);
 
 init_error:
+  if (privdata->table4 != NULL)
+    free(privdata->table4,M_NETGRAPH_ROUTE);
+  if (privdata->table6 != NULL)
+    free(privdata->table6,M_NETGRAPH_ROUTE);
   if (privdata != NULL)
     free(privdata,M_NETGRAPH_ROUTE);
-  if (table4 != NULL)
-    free(table4,M_NETGRAPH_ROUTE);
-  if (table6 != NULL)
-    free(table6,M_NETGRAPH_ROUTE);
   return (ENOMEM);
 }
 
@@ -350,11 +365,11 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
         }
         case NGM_ROUTE_FLUSH:
         {
-          if (error = ng_table_flush(ng_routep->table4)) break;
+          if ((error = ng_table_flush(ng_routep->table4))) break;
           error = ng_table_flush(ng_routep->table6);
           break;
         }
-	case NGM_ROUTE_SET_FLAG:
+	case NGM_ROUTE_SETFLAGS:
 	  memcpy(&ng_routep->flags, msg->data, sizeof(struct ng_route_flags));
 	  break;
 	default:
@@ -383,7 +398,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
   /* Name of incoming hook */
   char *hook_name = NG_HOOK_NAME(hook);
   /* For outgoing hook */
-  char *out_hook;
+  hook_p out_hook;
   int error = 0;
   struct mbuf *m;
   struct ether_header *eh;
@@ -406,8 +421,8 @@ ng_route_rcvdata(hook_p hook, item_p item )
     NGI_GET_M(item, m);
     /* Pullup ether and ip headers at once, because we almost certainly
      * will use both */
-    if ( m->m_len < sizeof(struct ether_header+
-                     max(sizeof(struct ip),sizeof(struct ip6_hdr))) &&
+    if ( m->m_len < sizeof(struct ether_header) +
+                     max(sizeof(struct ip),sizeof(struct ip6_hdr)) &&
         (m = m_pullup(m, sizeof(struct ether_header) +
                      max(sizeof(struct ip),sizeof(struct ip6_hdr)))) == NULL) {
           error=ENOBUFS;
@@ -500,7 +515,7 @@ static int
 ng_route_disconnect(hook_p hook)
 {
   if (NG_HOOK_PRIVATE(hook))
-    ((struct XXX_hookinfo *) (NG_HOOK_PRIVATE(hook)))->hook = NULL;
+    ((struct ng_route_hookinfo *) (NG_HOOK_PRIVATE(hook)))->hook = NULL;
   if ((NG_NODE_NUMHOOKS(NG_HOOK_NODE(hook)) == 0)
     && (NG_NODE_IS_VALID(NG_HOOK_NODE(hook)))) /* already shutting down? */
   ng_rmnode_self(NG_HOOK_NODE(hook));
@@ -513,7 +528,7 @@ ng_route_disconnect(hook_p hook)
 
 /* Add entry */
 static int
-ng_table_add_entry(radix_node_head *rnh, void *entry, int type)
+ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type)
 {
   struct ng_route_entry *ent = malloc(sizeof(*ent), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
   struct radix_node *rn;
@@ -524,24 +539,24 @@ ng_table_add_entry(radix_node_head *rnh, void *entry, int type)
       KEY_LEN(ent->a.addr4) = KEY_LEN_INET;
       KEY_LEN(ent->m.mask4) = KEY_LEN_INET;
       struct ng_route_tuple4 *newent = entry;
-      ent->a.addr4.sin_addr = newent->addr.sin_addr;
-      ent->m.mask4.sin_addr = newent->mask.sin_addr;
+      ent->a.addr4.sin_addr.s_addr = newent->addr.s_addr;
+      ent->m.mask4.sin_addr.s_addr = newent->mask.s_addr;
       ent->value = newent->value;
-      addr_ptr = &ent->a.addr4;
-      mask_ptr = &ent->m.mask4;
+      addr_ptr = (struct sockaddr *) &ent->a.addr4;
+      mask_ptr = (struct sockaddr *) &ent->m.mask4;
       break;
 
     case 6:
       KEY_LEN(ent->a.addr6) = KEY_LEN_INET6;
       KEY_LEN(ent->m.mask6) = KEY_LEN_INET6;
-      struct ng_route_tuple6 *newent = entry;
-      memcpy(&ent->a.addr6.sin6_addr, &newent->addr.sin6_addr,
-	     sizeof(newent->addr6));
-      memcpy(&ent->m.mask6.sin6_addr, &newent->mask.sin6_addr,
-	     sizeof(newent->mask6));
-      ent->value = newent->value;
-      addr_ptr = &ent->a.addr6;
-      mask_ptr = &ent->m.mask6;
+      struct ng_route_tuple6 *newent6 = entry;
+      memcpy(&ent->a.addr6.sin6_addr, &newent6->addr.__u6_addr ,
+	     sizeof(newent6->addr));
+      memcpy(&ent->m.mask6.sin6_addr, &newent6->mask.__u6_addr ,
+	     sizeof(newent6->mask));
+      ent->value = newent6->value;
+      addr_ptr = (struct sockaddr *) &ent->a.addr6;
+      mask_ptr = (struct sockaddr *) &ent->m.mask6;
       break;
 
     default:
@@ -550,7 +565,7 @@ ng_table_add_entry(radix_node_head *rnh, void *entry, int type)
 
   rn = rnh->rnh_addaddr(addr_ptr, mask_ptr, rnh, (void *) ent);
   if (rn == NULL) {
-    free(entd, M_NETGRAPH_ROUTE);
+    free(ent, M_NETGRAPH_ROUTE);
     return (EEXIST);
   }
   return (0);
@@ -558,35 +573,32 @@ ng_table_add_entry(radix_node_head *rnh, void *entry, int type)
 
 /* Delete entry */
 static int
-ng_table_del_entry(radix_node_head *rnh, void *entry, int type)
+ng_table_del_entry(struct radix_node_head *rnh, void *entry, int type)
 {
-  struct ng_route_entry *ent;
+  struct ng_route_entry *ent = entry;
   struct sockaddr_in    addr4, mask4;
   struct sockaddr_in6   addr6, mask6;
   struct sockaddr *addr_ptr, *mask_ptr;
-  char c;
 
   switch (type) {
     case 4:
       KEY_LEN(addr4) = KEY_LEN_INET;
       KEY_LEN(mask4) = KEY_LEN_INET;
-      struct ng_route_tuple4 *newent = entry;
-      addr4.sin_addr = newent->addr.sin_addr;
-      mask4.sin_addr = newent->mask.sin_addr;
-      addr_ptr = &addr4;
-      mask_ptr = &mask4;
+      addr4.sin_addr.s_addr = ent->a.addr4.sin_addr.s_addr;
+      mask4.sin_addr.s_addr = ent->m.mask4.sin_addr.s_addr;
+      addr_ptr = (struct sockaddr *) &addr4;
+      mask_ptr = (struct sockaddr *) &mask4;
       break;
 
     case 6:
       KEY_LEN(addr6) = KEY_LEN_INET6;
       KEY_LEN(mask6) = KEY_LEN_INET6;
-      struct ng_route_tuple6 *newent = entry;
-      memcpy(&addr6.sin6_addr, &newent->addr.sin6_addr,
-             sizeof(newent->addr6));
-      memcpy(&mask6.sin6_addr, &newent->mask.sin6_addr,
-             sizeof(newent->mask6));
-      addr_ptr = &addr6;
-      mask_ptr = &mask6;
+      memcpy(&addr6.sin6_addr, &ent->a.addr6.sin6_addr.__u6_addr,
+             sizeof(ent->a.addr6.sin6_addr.__u6_addr));
+      memcpy(&mask6.sin6_addr, &ent->m.mask6.sin6_addr.__u6_addr,
+             sizeof(ent->a.addr6.sin6_addr.__u6_addr));
+      addr_ptr = (struct sockaddr *) &addr6;
+      mask_ptr = (struct sockaddr *) &mask6;
       break;
 
     default:
@@ -617,7 +629,7 @@ flush_table_entry(struct radix_node *rn, void *arg)
 }
 
 static int
-ng_table_flush(radix_node_head *rnh)
+ng_table_flush(struct radix_node_head *rnh)
 {
         if (rnh != NULL) {
                 rnh->rnh_walktree(rnh, flush_table_entry, rnh);
@@ -628,25 +640,24 @@ ng_table_flush(radix_node_head *rnh)
 
 /* Table lookup */
 static int
-ng_table_lookup(radix_node_head *rnh, void *addrp, int type, u_int32_t *val)
+ng_table_lookup(struct radix_node_head *rnh, void *addrp, int type, u_int32_t *val)
 {
   struct ng_route_entry *ent;
   struct sockaddr_in    addr4;
   struct sockaddr_in6   addr6;
   struct sockaddr *addr_ptr;
-  char c;
 
   switch (type) {
     case 4:
       KEY_LEN(addr4) = KEY_LEN_INET;
       addr4.sin_addr = *((struct  in_addr*) addrp);
-      addr_ptr = &addr4;
+      addr_ptr = (struct sockaddr *) &addr4;
       break;
 
     case 6:
       KEY_LEN(addr6) = KEY_LEN_INET6;
       memcpy(&addr6.sin6_addr, addrp, sizeof(addr6.sin6_addr));
-      addr_ptr = &addr6;
+      addr_ptr = (struct sockaddr *) &addr6;
       break;
 
     default:
