@@ -421,10 +421,8 @@ ng_route_rcvdata(hook_p hook, item_p item )
     NGI_GET_M(item, m);
     /* Pullup ether and ip headers at once, because we almost certainly
      * will use both */
-    if ( m->m_len < sizeof(struct ether_header) +
-                     max(sizeof(struct ip),sizeof(struct ip6_hdr)) &&
-        (m = m_pullup(m, sizeof(struct ether_header) +
-                     max(sizeof(struct ip),sizeof(struct ip6_hdr)))) == NULL) {
+    if ( m->m_len < sizeof(struct ether_header) &&
+        (m = m_pullup(m, sizeof(struct ether_header))) == NULL) {
           error=ENOBUFS;
           goto bad;
     }
@@ -434,6 +432,11 @@ ng_route_rcvdata(hook_p hook, item_p item )
      * Fallback to notmatch hook if not found in any table or not IP at all. */
     switch (eh->ether_type) {
       case ETHERTYPE_IP:
+        if ( m->m_len < sizeof(struct ip) &&
+           (m = m_pullup(m, sizeof(struct ip))) == NULL) {
+          error=ENOBUFS;
+          goto bad;
+        }
         ip4hdr = mtod(m, struct ip *);
         ipaddr = (ng_routep->flags.direct)?(&ip4hdr->ip_src):(&ip4hdr->ip_dst);
 
@@ -445,6 +448,11 @@ ng_route_rcvdata(hook_p hook, item_p item )
         }
         break;
       case ETHERTYPE_IPV6:
+        if ( m->m_len < sizeof(struct ip6_hdr) &&
+           (m = m_pullup(m, sizeof(struct ip6_hdr))) == NULL) {
+          error=ENOBUFS;
+          goto bad;
+        }
         ip6hdr = mtod(m, struct ip6_hdr *);
         ipaddr = (ng_routep->flags.direct)?(&ip6hdr->ip6_src):(&ip6hdr->ip6_dst);
         if (ng_table_lookup(ng_routep->table6, ipaddr, 6, &num)) {
