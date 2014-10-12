@@ -263,10 +263,6 @@ ng_route_constructor(node_p node)
   /* Initialize private descriptors */
   privdata = malloc(sizeof(*privdata), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
   if (privdata == NULL) goto init_error;
-  privdata->table4 = malloc(sizeof(struct radix_node_head), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
-  if (privdata->table4 == NULL) goto init_error;
-  privdata->table6 = malloc(sizeof(struct radix_node_head), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
-  if (privdata->table6 == NULL) goto init_error;
 
   /* Init tables */
   if (!rn_inithead((void **)&privdata->table4, OFF_LEN_INET) ||
@@ -279,11 +275,12 @@ ng_route_constructor(node_p node)
 
 init_error:
   if (privdata->table4 != NULL)
-    free(privdata->table4,M_NETGRAPH_ROUTE);
+    rn_detachhead((void **)&privdata->table4);
   if (privdata->table6 != NULL)
-    free(privdata->table6,M_NETGRAPH_ROUTE);
+    rn_detachhead((void **)&privdata->table6);
   if (privdata != NULL)
     free(privdata,M_NETGRAPH_ROUTE);
+  printf("ng_route: failed to init node!\n");
   return (ENOMEM);
 }
 
@@ -430,7 +427,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
 
     /* Determine IP version and lookup corresponding table.
      * Fallback to notmatch hook if not found in any table or not IP at all. */
-    switch (eh->ether_type) {
+    switch (ntohs(eh->ether_type)) {
       case ETHERTYPE_IP:
         if ( m->m_len < sizeof(struct ip) &&
            (m = m_pullup(m, sizeof(struct ip))) == NULL) {
@@ -440,6 +437,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
         ip4hdr = mtod(m, struct ip *);
         ipaddr = (ng_routep->flags.direct)?(&ip4hdr->ip_src):(&ip4hdr->ip_dst);
 
+        printf("ng_route: looking up address %s\n",inet_ntoa(*(struct in_addr*)ipaddr));
         /* Lookup */
         if (ng_table_lookup(ng_routep->table4, ipaddr, 4, &num)) {
           out_hook = ng_routep->up[num].hook;
@@ -462,6 +460,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
         }
         break;
       default:
+        printf("ng_route: forwarding ethertype 0x%x\n",ntohs(eh->ether_type));
         /* Not IP or IPv6, send to special hook */
         out_hook = ng_routep->notmatch.hook;
     }
@@ -500,7 +499,9 @@ ng_route_shutdown(node_p node)
   const ng_route_p privdata = NG_NODE_PRIVATE(node);
   NG_NODE_SET_PRIVATE(node, NULL);
   NG_NODE_UNREF(node);
-  free(privdata, M_NETGRAPH);
+  rn_detachhead((void **)&privdata->table4);
+  rn_detachhead((void **)&privdata->table6);
+  free(privdata, M_NETGRAPH_ROUTE);
   return (0);
 }
 
@@ -525,8 +526,8 @@ ng_route_disconnect(hook_p hook)
   if (NG_HOOK_PRIVATE(hook))
     ((struct ng_route_hookinfo *) (NG_HOOK_PRIVATE(hook)))->hook = NULL;
   if ((NG_NODE_NUMHOOKS(NG_HOOK_NODE(hook)) == 0)
-    && (NG_NODE_IS_VALID(NG_HOOK_NODE(hook)))) /* already shutting down? */
-  ng_rmnode_self(NG_HOOK_NODE(hook));
+      && (NG_NODE_IS_VALID(NG_HOOK_NODE(hook)))) /* already shutting down? */
+    ng_rmnode_self(NG_HOOK_NODE(hook));
   return (0);
 }
 

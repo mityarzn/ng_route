@@ -1,6 +1,6 @@
 #!/bin/sh
 
-#kldload ./ng_route.ko
+kldload ./ng_route.ko
 ngctl mkpeer em1: route lower down
 ngctl name em1:lower route_up
 ngctl mkpeer route_up: tee notmatch left
