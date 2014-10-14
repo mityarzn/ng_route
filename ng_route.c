@@ -402,7 +402,6 @@ ng_route_rcvdata(hook_p hook, item_p item )
   struct ip      *ip4hdr;
   struct ip6_hdr *ip6hdr;
   void  *ipaddr;
-
   u_int32_t num;
 
   if (strncmp(hook_name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0 ||
@@ -429,29 +428,33 @@ ng_route_rcvdata(hook_p hook, item_p item )
      * Fallback to notmatch hook if not found in any table or not IP at all. */
     switch (ntohs(eh->ether_type)) {
       case ETHERTYPE_IP:
-        if ( m->m_len < sizeof(struct ip) &&
-           (m = m_pullup(m, sizeof(struct ip))) == NULL) {
+        if ( m->m_len < sizeof(struct ether_header)+sizeof(struct ip) &&
+           (m = m_pullup(m, sizeof(struct ether_header)+sizeof(struct ip)))
+              == NULL) {
           error=ENOBUFS;
           goto bad;
         }
-        ip4hdr = mtod(m, struct ip *);
-        ipaddr = (ng_routep->flags.direct)?(&ip4hdr->ip_src):(&ip4hdr->ip_dst);
+        ip4hdr = mtodo(m, ETHER_HDR_LEN);
+        ipaddr = (ng_routep->flags.direct)
+                      ?(&ip4hdr->ip_src.s_addr):(&ip4hdr->ip_dst.s_addr);
 
-        printf("ng_route: looking up address %s\n",inet_ntoa(*(struct in_addr*)ipaddr));
+//        printf("ng_route: looking up address %s\n",inet_ntoa(*(struct in_addr*)ipaddr));
         /* Lookup */
         if (ng_table_lookup(ng_routep->table4, ipaddr, 4, &num)) {
+//          printf("ng_route: found hook number %u\n",num);
           out_hook = ng_routep->up[num].hook;
         } else {
           out_hook = ng_routep->notmatch.hook;
         }
         break;
       case ETHERTYPE_IPV6:
-        if ( m->m_len < sizeof(struct ip6_hdr) &&
-           (m = m_pullup(m, sizeof(struct ip6_hdr))) == NULL) {
+        if ( m->m_len < sizeof(struct ether_header)+sizeof(struct ip6_hdr) &&
+           (m = m_pullup(m, sizeof(struct ether_header)+sizeof(struct ip6_hdr)))
+              == NULL) {
           error=ENOBUFS;
           goto bad;
         }
-        ip6hdr = mtod(m, struct ip6_hdr *);
+        ip6hdr = mtodo(m, ETHER_HDR_LEN);
         ipaddr = (ng_routep->flags.direct)?(&ip6hdr->ip6_src):(&ip6hdr->ip6_dst);
         if (ng_table_lookup(ng_routep->table6, ipaddr, 6, &num)) {
           out_hook = ng_routep->up[num].hook;
