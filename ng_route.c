@@ -526,8 +526,10 @@ ng_route_connect(hook_p hook)
 static int
 ng_route_disconnect(hook_p hook)
 {
+/* We have no hook private data (at least for now).
   if (NG_HOOK_PRIVATE(hook))
-    ((struct ng_route_hookinfo *) (NG_HOOK_PRIVATE(hook)))->hook = NULL;
+    ((struct ng_route_hookinfo *) (NG_HOOK_PRIVATE(hook)))->hook = NULL; */
+
   if ((NG_NODE_NUMHOOKS(NG_HOOK_NODE(hook)) == 0)
       && (NG_NODE_IS_VALID(NG_HOOK_NODE(hook)))) /* already shutting down? */
     ng_rmnode_self(NG_HOOK_NODE(hook));
