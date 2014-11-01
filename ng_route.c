@@ -218,7 +218,7 @@ static struct ng_type typestruct = {
   .rcvmsg =	ng_route_rcvmsg,
   .shutdown =	ng_route_shutdown,
   .newhook =	ng_route_newhook,
-  /*	.findhook =	ng_route_findhook, 	*/
+  .findhook =	ng_route_findhook,
   .connect =	ng_route_connect,
   .rcvdata =	ng_route_rcvdata,
   .disconnect =	ng_route_disconnect,
@@ -412,7 +412,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
     /* We don't touch mbuf here, so just forward full item */
     NG_FWD_ITEM_HOOK(error, item, out_hook);
     return (0);
-  } else if (strcmp(hook_name, NG_ROUTE_HOOK_DOWN) == 0) {
+  } else if (hook == ng_routep->down.hook) {
     /* Item came from downlink. We need to lookup table to find next hook */
     NGI_GET_M(item, m);
     /* Pullup ether and ip headers at once, because we almost certainly
@@ -463,7 +463,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
         }
         break;
       default:
-        printf("ng_route: forwarding ethertype 0x%x\n",ntohs(eh->ether_type));
+        // printf("ng_route: forwarding ethertype 0x%x\n",ntohs(eh->ether_type));
         /* Not IP or IPv6, send to special hook */
         out_hook = ng_routep->notmatch.hook;
     }
@@ -481,6 +481,34 @@ bad:
   NG_FREE_ITEM(item);
   NG_FREE_M(m);
   return error;
+}
+
+static hook_p
+ng_route_findhook(node_p node, const char *name)
+{
+  const ng_route_p ng_routep = NG_NODE_PRIVATE(node);
+  hook_p hook = NULL;
+  const char *cp;
+  int link = 0;
+
+  if (strncmp(name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0) {
+    char *eptr;
+
+    cp = name + strlen(NG_ROUTE_HOOK_UP);
+    if (!isdigit(*cp))
+      return (NULL);
+    link = (int)strtoul(cp, &eptr, 10);
+    if (*eptr != '\0' || link < 0 || link >= NG_ROUTE_MAX_UPLINKS)
+      return (NULL);
+
+    hook = ng_routep->up[link].hook;
+  } else if (strcmp(name, NG_ROUTE_HOOK_DOWN) == 0) {
+    hook = ng_routep->down.hook;
+  } else if (strcmp(name, NG_ROUTE_HOOK_NOTMATCH) == 0) {
+    hook = ng_routep->notmatch.hook;
+  } else
+    return(NULL);    /* not a hook we know about */
+  return(hook);
 }
 
 
@@ -526,9 +554,8 @@ ng_route_connect(hook_p hook)
 static int
 ng_route_disconnect(hook_p hook)
 {
-/* We have no hook private data (at least for now).
-  if (NG_HOOK_PRIVATE(hook))
-    ((struct ng_route_hookinfo *) (NG_HOOK_PRIVATE(hook)))->hook = NULL; */
+  /* Remove pointer from node's private data */
+  NG_HOOK_PIVATE(hook) = NULL;
 
   if ((NG_NODE_NUMHOOKS(NG_HOOK_NODE(hook)) == 0)
       && (NG_NODE_IS_VALID(NG_HOOK_NODE(hook)))) /* already shutting down? */
