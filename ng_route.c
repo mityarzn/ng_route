@@ -96,6 +96,7 @@ static ng_newhook_t	ng_route_newhook;
 static ng_connect_t	ng_route_connect;
 static ng_rcvdata_t	ng_route_rcvdata;
 static ng_disconnect_t	ng_route_disconnect;
+static ng_findhook_t    ng_route_findhook;
 
 /*
  * Internal methods
@@ -555,7 +556,7 @@ static int
 ng_route_disconnect(hook_p hook)
 {
   /* Remove pointer from node's private data */
-  NG_HOOK_PIVATE(hook) = NULL;
+  (* (struct ng_route_hookinfo*) NG_HOOK_PRIVATE(hook)).hook = NULL;
 
   if ((NG_NODE_NUMHOOKS(NG_HOOK_NODE(hook)) == 0)
       && (NG_NODE_IS_VALID(NG_HOOK_NODE(hook)))) /* already shutting down? */
