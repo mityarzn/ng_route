@@ -41,6 +41,9 @@
  * $Whistle: ng_sample.c,v 1.13 1999/11/01 09:24:52 julian Exp $
  */
 
+/* temporary for debug */
+#define NETGRAPH_DEBUG 1
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -54,6 +57,7 @@
 #include <netinet/ip6.h>
 #include <net/radix.h>
 #include <net/ethernet.h>
+#include <vm/uma.h>
 
 #include <netgraph/ng_message.h>
 #include <netgraph/ng_parse.h>
@@ -69,9 +73,13 @@ static MALLOC_DEFINE(M_NETGRAPH_ROUTE, "netgraph_route", "netgraph route node");
 #define M_NETGRAPH_ROUTE M_NETGRAPH
 #endif
 
+/* zone for storing ngpl_hdr-s */
+static uma_zone_t ngr_zone;
+
 #define NG_ROUTE_MAX_UPLINKS 1048576 /* It results in 8-megabyte (x86_64) array
 				      * in node's private info. That's many,
 				      * maybe we shold move it to hashtable. */
+
 /* Next 8 #defines was fully copied from ip_fw_table.c */
 #define KEY_LEN(v)      *((uint8_t *)&(v))
 #define KEY_OFS         (8*offsetof(struct sockaddr_in, sin_addr))
@@ -97,6 +105,7 @@ static ng_connect_t	ng_route_connect;
 static ng_rcvdata_t	ng_route_rcvdata;
 static ng_disconnect_t	ng_route_disconnect;
 static ng_findhook_t    ng_route_findhook;
+static int ng_route_modevent(module_t, int, void *);
 
 /*
  * Internal methods
@@ -214,7 +223,8 @@ static const struct ng_cmdlist ng_route_cmdlist[] = {
 /* Netgraph node type descriptor */
 static struct ng_type typestruct = {
   .version =	NG_ABI_VERSION,
-  .name =		NG_ROUTE_NODE_TYPE,
+  .name =	NG_ROUTE_NODE_TYPE,
+  .mod_event =	ng_route_modevent,
   .constructor =	ng_route_constructor,
   .rcvmsg =	ng_route_rcvmsg,
   .shutdown =	ng_route_shutdown,
@@ -572,7 +582,7 @@ ng_route_disconnect(hook_p hook)
 static int
 ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type)
 {
-  struct ng_route_entry *ent = malloc(sizeof(*ent), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
+  struct ng_route_entry *ent = uma_zalloc(ngr_zone, M_WAITOK | M_ZERO);
   struct radix_node *rn;
   struct sockaddr *addr_ptr, *mask_ptr;
 
@@ -607,7 +617,7 @@ ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type)
 
   rn = rnh->rnh_addaddr(addr_ptr, mask_ptr, rnh, (void *) ent);
   if (rn == NULL) {
-    free(ent, M_NETGRAPH_ROUTE);
+    uma_zfree(ngr_zone, ent);
     return (EEXIST);
   }
   return (0);
@@ -652,7 +662,7 @@ ng_table_del_entry(struct radix_node_head *rnh, void *entry, int type)
   if (ent == NULL)
     return (ESRCH);
 
-  free(ent, M_NETGRAPH_ROUTE);
+  uma_zfree(ngr_zone, ent);
   return (0);
 
 }
@@ -666,11 +676,11 @@ flush_table_entry(struct radix_node *rn, void *arg)
         ent = (struct table_entry *)
             rnh->rnh_deladdr(rn->rn_key, rn->rn_mask, rnh);
         if (ent != NULL)
-                free(ent, M_NETGRAPH_ROUTE);
+                uma_zfree(ngr_zone, ent);
         return (0);
 }
 
-static int
+static inline int
 ng_table_flush(struct radix_node_head *rnh)
 {
         if (rnh != NULL) {
@@ -712,4 +722,28 @@ ng_table_lookup(struct radix_node_head *rnh, void *addrp, int type, u_int32_t *v
     return (1);
   }
   return (0);
+}
+
+static int
+ng_route_modevent(module_t mod, int type, void *unused)
+{
+	int error = 0;
+
+	switch (type) {
+	case MOD_LOAD:
+		ngr_zone = uma_zcreate("ng_route", sizeof(struct ng_route_entry),
+				       NULL, NULL, NULL, NULL,
+		    UMA_ALIGN_PTR, 0);
+		if (ngr_zone == NULL)
+			panic("ng_route: couldn't allocate table zone");
+		break;
+	case MOD_UNLOAD:
+		uma_zdestroy(ngr_zone);
+		break;
+	default:
+		error = EOPNOTSUPP;
+		break;
+	}
+
+	return (error);
 }
