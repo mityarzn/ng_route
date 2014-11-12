@@ -591,8 +591,8 @@ ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type)
       KEY_LEN(ent->a.addr4) = KEY_LEN_INET;
       KEY_LEN(ent->m.mask4) = KEY_LEN_INET;
       struct ng_route_tuple4 *newent = entry;
-      ent->a.addr4.sin_addr.s_addr = newent->addr.s_addr;
-      ent->m.mask4.sin_addr.s_addr = newent->mask.s_addr;
+      ent->a.addr4.sin_addr = newent->addr;
+      ent->m.mask4.sin_addr = newent->mask;
       ent->value = newent->value;
       addr_ptr = (struct sockaddr *) &ent->a.addr4;
       mask_ptr = (struct sockaddr *) &ent->m.mask4;
@@ -602,10 +602,8 @@ ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type)
       KEY_LEN(ent->a.addr6) = KEY_LEN_INET6;
       KEY_LEN(ent->m.mask6) = KEY_LEN_INET6;
       struct ng_route_tuple6 *newent6 = entry;
-      memcpy(&ent->a.addr6.sin6_addr, &newent6->addr.__u6_addr ,
-	     sizeof(newent6->addr));
-      memcpy(&ent->m.mask6.sin6_addr, &newent6->mask.__u6_addr ,
-	     sizeof(newent6->mask));
+      ent->a.addr6.sin6_addr = newent6->addr;
+      ent->m.mask6.sin6_addr = newent6->mask;
       ent->value = newent6->value;
       addr_ptr = (struct sockaddr *) &ent->a.addr6;
       mask_ptr = (struct sockaddr *) &ent->m.mask6;
@@ -627,17 +625,20 @@ ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type)
 static int
 ng_table_del_entry(struct radix_node_head *rnh, void *entry, int type)
 {
-  struct ng_route_entry *ent = entry;
+  struct ng_route_entry *ent;
   struct sockaddr_in    addr4, mask4;
   struct sockaddr_in6   addr6, mask6;
+  struct ng_route_tuple4 *newent;
+  struct ng_route_tuple6 *newent6;
   struct sockaddr *addr_ptr, *mask_ptr;
 
   switch (type) {
     case 4:
       KEY_LEN(addr4) = KEY_LEN_INET;
       KEY_LEN(mask4) = KEY_LEN_INET;
-      addr4.sin_addr.s_addr = ent->a.addr4.sin_addr.s_addr;
-      mask4.sin_addr.s_addr = ent->m.mask4.sin_addr.s_addr;
+      newent = entry;
+      addr4.sin_addr = newent->addr;
+      mask4.sin_addr = newent->mask;
       addr_ptr = (struct sockaddr *) &addr4;
       mask_ptr = (struct sockaddr *) &mask4;
       break;
@@ -645,10 +646,9 @@ ng_table_del_entry(struct radix_node_head *rnh, void *entry, int type)
     case 6:
       KEY_LEN(addr6) = KEY_LEN_INET6;
       KEY_LEN(mask6) = KEY_LEN_INET6;
-      memcpy(&addr6.sin6_addr, &ent->a.addr6.sin6_addr.__u6_addr,
-             sizeof(ent->a.addr6.sin6_addr.__u6_addr));
-      memcpy(&mask6.sin6_addr, &ent->m.mask6.sin6_addr.__u6_addr,
-             sizeof(ent->a.addr6.sin6_addr.__u6_addr));
+      newent6 = entry;
+      addr6.sin6_addr = newent6->addr;
+      mask6.sin6_addr = newent6->mask;
       addr_ptr = (struct sockaddr *) &addr6;
       mask_ptr = (struct sockaddr *) &mask6;
       break;
