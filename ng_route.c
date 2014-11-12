@@ -541,7 +541,9 @@ ng_route_shutdown(node_p node)
   const ng_route_p privdata = NG_NODE_PRIVATE(node);
   NG_NODE_SET_PRIVATE(node, NULL);
   NG_NODE_UNREF(node);
+  ng_table_flush(privdata->table4);
   rn_detachhead((void **)&privdata->table4);
+  ng_table_flush(privdata->table6);
   rn_detachhead((void **)&privdata->table6);
   free(privdata, M_NETGRAPH_ROUTE);
   return (0);
