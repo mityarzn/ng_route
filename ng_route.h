@@ -61,9 +61,9 @@ enum {
   NGM_ROUTE_ADD6,
   NGM_ROUTE_DEL4,
   NGM_ROUTE_DEL6,
-  NGM_ROUTE_PRINT,
   NGM_ROUTE_FLUSH,
   NGM_ROUTE_SETFLAGS,
+  NGM_ROUTE_GETFLAGS,
 };
 
 /* Internal type for IPv4 routing table */

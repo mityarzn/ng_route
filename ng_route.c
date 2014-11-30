@@ -196,13 +196,6 @@ static const struct ng_cmdlist ng_route_cmdlist[] = {
     &ng_route_tuple6_type,
     NULL
   },
-    {
-    NGM_ROUTE_COOKIE,
-    NGM_ROUTE_PRINT,
-    "print",
-    NULL,
-    NULL, /* TODO: make struct of 2 arrays (for v4 and v6) here */
-  },
   {
     NGM_ROUTE_COOKIE,
     NGM_ROUTE_FLUSH,
@@ -216,6 +209,13 @@ static const struct ng_cmdlist ng_route_cmdlist[] = {
     "setflags",
     &ng_route_flags_type,
     NULL
+  },
+  {
+    NGM_ROUTE_COOKIE,
+    NGM_ROUTE_GETFLAGS,
+    "getflags",
+    NULL,
+    &ng_route_flags_type
   },
   { 0 }
 };
@@ -366,11 +366,6 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
           error = ng_table_del_entry(ng_routep->table6, msg->data, 6);
           break;
         }
-        case NGM_ROUTE_PRINT:
-        {
-          /*dummy*/
-          break;
-        }
         case NGM_ROUTE_FLUSH:
         {
           if ((error = ng_table_flush(ng_routep->table4))) break;
@@ -379,6 +374,10 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
         }
 	case NGM_ROUTE_SETFLAGS:
 	  memcpy(&ng_routep->flags, msg->data, sizeof(struct ng_route_flags));
+	  break;
+	case NGM_ROUTE_GETFLAGS:
+	  NG_MKRESPONSE(resp, msg, sizeof(struct ng_route_flags), M_NOWAIT);
+	  memcpy(msg->data, &ng_routep->flags, sizeof(struct ng_route_flags));
 	  break;
 	default:
 	  error = EINVAL;		/* unknown command */
@@ -522,19 +521,6 @@ ng_route_findhook(node_p node, const char *name)
   return(hook);
 }
 
-
-/*
- * Do local shutdown processing..
- * All our links and the name have already been removed.
- * If we are a persistant device, we might refuse to go away.
- * In the case of a persistant node we signal the framework that we
- * are still in business by clearing the NGF_INVALID bit. However
- * If we find the NGF_REALLY_DIE bit set, this means that
- * we REALLY need to die (e.g. hardware removed).
- * This would have been set using the NG_NODE_REALLY_DIE(node)
- * macro in some device dependent function (not shown here) before
- * calling ng_rmnode_self().
- */
 static int
 ng_route_shutdown(node_p node)
 {
