@@ -42,7 +42,7 @@
  */
 
 /* temporary for debug */
-#define NETGRAPH_DEBUG 1
+//#define NETGRAPH_DEBUG 1
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -425,8 +425,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
   } else if (hook == ng_routep->down.hook) {
     /* Item came from downlink. We need to lookup table to find next hook */
     NGI_GET_M(item, m);
-    /* Pullup ether and ip headers at once, because we almost certainly
-     * will use both */
+
     if ( m->m_len < sizeof(struct ether_header) &&
         (m = m_pullup(m, sizeof(struct ether_header))) == NULL) {
           error=ENOBUFS;
@@ -448,10 +447,10 @@ ng_route_rcvdata(hook_p hook, item_p item )
         ipaddr = (ng_routep->flags.direct)
                       ?(&ip4hdr->ip_src.s_addr):(&ip4hdr->ip_dst.s_addr);
 
-//        printf("ng_route: looking up address %s\n",inet_ntoa(*(struct in_addr*)ipaddr));
+        //log(LOG_DEBUG, "ng_route: looking up address %s\n",inet_ntoa(*(struct in_addr*)ipaddr));
         /* Lookup */
         if (ng_table_lookup(ng_routep->table4, ipaddr, 4, &num)) {
-//          printf("ng_route: found hook number %u\n",num);
+          //log(LOG_DEBUG, "ng_route: found hook number %u\n",num);
           out_hook = ng_routep->up[num].hook;
         } else {
           out_hook = ng_routep->notmatch.hook;
@@ -473,7 +472,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
         }
         break;
       default:
-        // printf("ng_route: forwarding ethertype 0x%x\n",ntohs(eh->ether_type));
+        //log(LOG_DEBUG, "ng_route: forwarding ethertype 0x%x\n",ntohs(eh->ether_type));
         /* Not IP or IPv6, send to special hook */
         out_hook = ng_routep->notmatch.hook;
     }
@@ -581,6 +580,8 @@ ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type)
       struct ng_route_tuple4 *newent = entry;
       ent->a.addr4.sin_addr = newent->addr;
       ent->m.mask4.sin_addr = newent->mask;
+      /*log(LOG_DEBUG, "Adding address %s ", inet_ntoa(ent->a.addr4.sin_addr));
+      log(LOG_DEBUG, "mask %s\n",          inet_ntoa(ent->m.mask4.sin_addr));*/
       ent->value = newent->value;
       addr_ptr = (struct sockaddr *) &ent->a.addr4;
       mask_ptr = (struct sockaddr *) &ent->m.mask4;
@@ -703,7 +704,7 @@ ng_table_lookup(struct radix_node_head *rnh, void *addrp, int type, u_int32_t *v
     default:
       return (EINVAL);
   }
-  ent = (struct ng_route_entry *)(rnh->rnh_lookup(addr_ptr, NULL, rnh));
+  ent = (struct ng_route_entry *)(rnh->rnh_matchaddr(addr_ptr, rnh));
 
   if (ent != NULL) {
     *val = ent->value;

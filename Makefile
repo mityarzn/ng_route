@@ -1,5 +1,6 @@
 # Note: It is important to make sure you include the <bsd.kmod.mk> makefile after declaring the KMOD and SRCS variables.
 
+CFLAGS += -g 
 # Declare Name of kernel module
 KMOD =   ng_route
 # Enumerate Source files for kernel module
