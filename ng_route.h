@@ -66,6 +66,13 @@ enum {
   NGM_ROUTE_GETFLAGS,
 };
 
+struct ng_route_hookstat {
+	u_int64_t in_packets;
+	u_int64_t in_octets;
+	u_int64_t out_packets;
+	u_int64_t out_octets;
+};
+
 /* Internal type for IPv4 routing table */
 struct ng_route_tuple4 {
   struct in_addr 	addr;
@@ -82,6 +89,8 @@ struct ng_route_tuple6 {
 
 struct ng_route_flags {
   int8_t direct;
+  int8_t verbose;
+  int8_t debug;
 };
 
 struct ng_route_entry {

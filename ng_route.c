@@ -122,118 +122,120 @@ ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type);
 /* Parse types */
 // IPv4 tuple subtype and supertype
 struct ng_parse_struct_field ng_route_tuple4_fields[] = {
-  { "addr",	&ng_parse_ipaddr_type   },
-  { "mask",	&ng_parse_ipaddr_type   },
-  { "value",	&ng_parse_int32_type    },
-  { NULL }
+	{ "addr",	&ng_parse_ipaddr_type   },
+	{ "mask",	&ng_parse_ipaddr_type   },
+	{ "value",	&ng_parse_int32_type    },
+	{ NULL }
 };
 static const struct ng_parse_type ng_route_tuple4_type = {
-  &ng_parse_struct_type,
-  &ng_route_tuple4_fields
+	&ng_parse_struct_type,
+	&ng_route_tuple4_fields
 };
 
 // Anything for IPv6 tuple
 static int
-  ng_route_tuple6_getLength(const struct ng_parse_type *type,
-          const u_char *start, const u_char *buf)
+ng_route_tuple6_getLength(const struct ng_parse_type *type,
+			  const u_char *start, const u_char *buf)
 {
-  return 16;
+	return 16;
 }
 static const struct ng_parse_type ng_route_ip6addr_type = {
-  &ng_parse_bytearray_type,
-  &ng_route_tuple6_getLength
+	&ng_parse_bytearray_type,
+	&ng_route_tuple6_getLength
 };
 struct ng_parse_struct_field ng_route_tuple6_fields[] = {
-  { "addr",	&ng_route_ip6addr_type },
-  { "mask",	&ng_route_ip6addr_type },
-  { "value",	&ng_parse_int32_type   },
-  { NULL }
+	{ "addr",	&ng_route_ip6addr_type },
+	{ "mask",	&ng_route_ip6addr_type },
+	{ "value",	&ng_parse_int32_type   },
+	{ NULL }
 };
 static const struct ng_parse_type ng_route_tuple6_type = {
-  &ng_parse_struct_type,
-  &ng_route_tuple6_fields
+	&ng_parse_struct_type,
+	&ng_route_tuple6_fields
 };
 
 /* Type for flags structure
  */
 struct ng_parse_struct_field ng_route_flags_fields[] = {
-  /* indicating matching direction: source (1) or destination (0) address */
-  { "direct",	&ng_parse_int8_type },
-  { NULL }
+	/* indicating matching direction: source (1) or destination (0) address */
+	{ "direct",	&ng_parse_int8_type },
+	{ "verose",	&ng_parse_int8_type },
+	{ "debug",	&ng_parse_int8_type },
+	{ NULL }
 };
 static const struct ng_parse_type ng_route_flags_type = {
-  &ng_parse_struct_type,
-  &ng_route_flags_fields
+	&ng_parse_struct_type,
+	&ng_route_flags_fields
 };
 
 /* List of commands and how to convert arguments to/from ASCII */
 static const struct ng_cmdlist ng_route_cmdlist[] = {
-  {
-    NGM_ROUTE_COOKIE,
-    NGM_ROUTE_ADD4,
-    "add4",
-    &ng_route_tuple4_type,
-    NULL,
-  },
-  {
-    NGM_ROUTE_COOKIE,
-    NGM_ROUTE_ADD6,
-    "add6",
-    &ng_route_tuple6_type,
-    NULL
-  },
-  {
-    NGM_ROUTE_COOKIE,
-    NGM_ROUTE_DEL4,
-    "del4",
-    &ng_route_tuple4_type,
-    NULL,
-  },
-  {
-    NGM_ROUTE_COOKIE,
-    NGM_ROUTE_DEL6,
-    "del6",
-    &ng_route_tuple6_type,
-    NULL
-  },
-  {
-    NGM_ROUTE_COOKIE,
-    NGM_ROUTE_FLUSH,
-    "flush",
-    NULL,
-    NULL,
-  },
-  {
-    NGM_ROUTE_COOKIE,
-    NGM_ROUTE_SETFLAGS,
-    "setflags",
-    &ng_route_flags_type,
-    NULL
-  },
-  {
-    NGM_ROUTE_COOKIE,
-    NGM_ROUTE_GETFLAGS,
-    "getflags",
-    NULL,
-    &ng_route_flags_type
-  },
-  { 0 }
+	{
+		NGM_ROUTE_COOKIE,
+		NGM_ROUTE_ADD4,
+		"add4",
+		&ng_route_tuple4_type,
+		NULL,
+	},
+	{
+		NGM_ROUTE_COOKIE,
+		NGM_ROUTE_ADD6,
+		"add6",
+		&ng_route_tuple6_type,
+		NULL
+	},
+	{
+		NGM_ROUTE_COOKIE,
+		NGM_ROUTE_DEL4,
+		"del4",
+		&ng_route_tuple4_type,
+		NULL,
+	},
+	{
+		NGM_ROUTE_COOKIE,
+		NGM_ROUTE_DEL6,
+		"del6",
+		&ng_route_tuple6_type,
+		NULL
+	},
+	{
+		NGM_ROUTE_COOKIE,
+		NGM_ROUTE_FLUSH,
+		"flush",
+		NULL,
+		NULL,
+	},
+	{
+		NGM_ROUTE_COOKIE,
+		NGM_ROUTE_SETFLAGS,
+		"setflags",
+		&ng_route_flags_type,
+		NULL
+	},
+	{
+		NGM_ROUTE_COOKIE,
+		NGM_ROUTE_GETFLAGS,
+		"getflags",
+		NULL,
+		&ng_route_flags_type
+	},
+	{ 0 }
 };
 
 /* Netgraph node type descriptor */
 static struct ng_type typestruct = {
-  .version =	NG_ABI_VERSION,
-  .name =	NG_ROUTE_NODE_TYPE,
-  .mod_event =	ng_route_modevent,
-  .constructor =	ng_route_constructor,
-  .rcvmsg =	ng_route_rcvmsg,
-  .shutdown =	ng_route_shutdown,
-  .newhook =	ng_route_newhook,
-  .findhook =	ng_route_findhook,
-  .connect =	ng_route_connect,
-  .rcvdata =	ng_route_rcvdata,
-  .disconnect =	ng_route_disconnect,
-  .cmdlist =	ng_route_cmdlist,
+	.version =	NG_ABI_VERSION,
+	.name =	NG_ROUTE_NODE_TYPE,
+	.mod_event =	ng_route_modevent,
+	.constructor =	ng_route_constructor,
+	.rcvmsg =	ng_route_rcvmsg,
+	.shutdown =	ng_route_shutdown,
+	.newhook =	ng_route_newhook,
+	.findhook =	ng_route_findhook,
+	.connect =	ng_route_connect,
+	.rcvdata =	ng_route_rcvdata,
+	.disconnect =	ng_route_disconnect,
+	.cmdlist =	ng_route_cmdlist,
 };
 NETGRAPH_INIT(route, &typestruct);
 
@@ -242,18 +244,19 @@ NETGRAPH_INIT(route, &typestruct);
  * We don't really need it now, but there may be some stats in future
  */
 struct ng_route_hookinfo {
-  hook_p	hook;
+	hook_p	hook;
+	struct ng_route_hookstat
 };
 
 /* Information we store for each node */
 struct ng_route {
-  struct 	 ng_route_hookinfo up[NG_ROUTE_MAX_UPLINKS];
-  struct 	 ng_route_hookinfo down;
-  struct         ng_route_hookinfo notmatch;
-  node_p	 node;		/* back pointer to node */
-  struct ng_route_flags flags;
-  struct radix_node_head *table4;
-  struct radix_node_head *table6;
+	struct 	 ng_route_hookinfo up[NG_ROUTE_MAX_UPLINKS];
+	struct 	 ng_route_hookinfo down;
+	struct         ng_route_hookinfo notmatch;
+	node_p	 node;		/* back pointer to node */
+	struct ng_route_flags flags;
+	struct radix_node_head *table4;
+	struct radix_node_head *table6;
 };
 typedef struct ng_route *ng_route_p;
 
@@ -373,11 +376,13 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
           break;
         }
 	case NGM_ROUTE_SETFLAGS:
-	  memcpy(&ng_routep->flags, msg->data, sizeof(struct ng_route_flags));
+	  log(LOG_DEBUG, "ng_route: setting direct %u\n",
+	      ((struct ng_route_flags*) msg->data)->direct);
+	  ng_routep->flags = *((struct ng_route_flags*) msg->data);
 	  break;
 	case NGM_ROUTE_GETFLAGS:
 	  NG_MKRESPONSE(resp, msg, sizeof(struct ng_route_flags), M_NOWAIT);
-	  memcpy(msg->data, &ng_routep->flags, sizeof(struct ng_route_flags));
+	  *((struct ng_route_flags*) msg->data) = ng_routep->flags;
 	  break;
 	default:
 	  error = EINVAL;		/* unknown command */
@@ -444,6 +449,8 @@ ng_route_rcvdata(hook_p hook, item_p item )
           goto bad;
         }
         ip4hdr = mtodo(m, ETHER_HDR_LEN);
+	log(LOG_DEBUG, "ng_route: searching direct %u\n",
+	      ng_routep->flags.direct);
         ipaddr = (ng_routep->flags.direct)
                       ?(&ip4hdr->ip_src.s_addr):(&ip4hdr->ip_dst.s_addr);
 
