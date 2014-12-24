@@ -173,6 +173,26 @@ static const struct ng_parse_type ng_route_flags_type = {
 	&ng_route_flags_fields
 };
 
+/* Types forstatistics: get hookname and return stats themselves */
+ struct ng_parse_struct_field ng_route_hookname_fields[] = {
+	{ "name",	&ng_parse_hookbuf_type },
+	{ NULL }
+};
+static const struct ng_parse_type ng_route_hookname_type = {
+	&ng_parse_struct_type,
+	&ng_route_hookname_fields
+};
+ struct ng_parse_struct_field ng_route_hookstats_fields[] = {
+	{ "in_packets",	&ng_parse_uint64_type },
+	{ "in_oktets",	&ng_parse_uint64_type },
+	{ "out_packets",&ng_parse_uint64_type },
+	{ "out_oktets",	&ng_parse_uint64_type },
+	{ NULL }
+};
+static const struct ng_parse_type ng_route_hookstats_type = {
+	&ng_parse_struct_type,
+	&ng_route_hookstats_fields
+};
 /* List of commands and how to convert arguments to/from ASCII */
 static const struct ng_cmdlist ng_route_cmdlist[] = {
 	{
@@ -224,6 +244,13 @@ static const struct ng_cmdlist ng_route_cmdlist[] = {
 		NULL,
 		&ng_route_flags_type
 	},
+	{
+		NGM_ROUTE_COOKIE,
+		NGM_ROUTE_GETSTATS,
+		"getstats",
+		&ng_route_hookname_type,
+		&ng_route_hookstats_type
+	},
 	{ 0 }
 };
 
@@ -250,7 +277,7 @@ NETGRAPH_INIT(route, &typestruct);
  */
 struct ng_route_hookinfo {
 	hook_p	hook;
-	struct ng_route_hookstat stats;
+	struct ng_route_hookstats stats;
 };
 
 /* Information we store for each node */
@@ -327,6 +354,7 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	struct ng_mesg *resp = NULL;
 	int error = 0;
 	struct ng_mesg *msg;
+	struct ng_route_hookinfo *hinfo;
 	
 	NGI_GET_MSG(item, msg);
 	/* Deal with message according to cookie and command */
@@ -356,6 +384,13 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			//if (ng_routep->flags.verbose)
 			NG_MKRESPONSE(resp, msg, sizeof(struct ng_route_flags), M_NOWAIT);
 			*((struct ng_route_flags*) resp->data) = ng_routep->flags;
+			break;
+		case NGM_ROUTE_GETSTATS:
+			hinfo = ng_route_findhookinfo(node, 
+					((struct ng_route_hookname *)msg->data)->name);
+			
+			NG_MKRESPONSE(resp, msg, sizeof(struct ng_route_hookstats), M_NOWAIT);
+			*((struct ng_route_hookstats*) resp->data) = hinfo->stats;
 			break;
 		default:
 			error = EINVAL;		/* unknown command */

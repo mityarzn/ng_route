@@ -64,9 +64,14 @@ enum {
   NGM_ROUTE_FLUSH,
   NGM_ROUTE_SETFLAGS,
   NGM_ROUTE_GETFLAGS,
+  NGM_ROUTE_GETSTATS
 };
 
-struct ng_route_hookstat {
+struct ng_route_hookname {
+	char name[NG_HOOKSIZ];
+};
+
+struct ng_route_hookstats {
 	u_int64_t in_packets;
 	u_int64_t in_octets;
 	u_int64_t out_packets;
