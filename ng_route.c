@@ -113,6 +113,8 @@ static int ng_route_modevent(module_t, int, void *);
 /*
  * Internal methods
  */
+static inline struct ng_route_hookinfo *
+ng_route_findhookinfo(node_p node, const char *name);
 static int
 ng_table_lookup(struct radix_node_head *rnh, void *addrp, int type, u_int32_t *val);
 static int
@@ -275,133 +277,101 @@ typedef struct ng_route *ng_route_p;
 static int
 ng_route_constructor(node_p node)
 {
-  ng_route_p privdata;
-
-  /* Initialize private descriptors */
-  privdata = malloc(sizeof(*privdata), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
-  if (privdata == NULL) goto init_error;
-
-  /* Init tables */
-  if (!rn_inithead((void **)&privdata->table4, OFF_LEN_INET) ||
-      !rn_inithead((void **)&privdata->table6, OFF_LEN_INET6))
-	goto init_error;
-  /* Link structs together; this counts as our one reference to *nodep */
-  NG_NODE_SET_PRIVATE(node, privdata);
-  privdata->node = node;
-  return (0);
-
+	ng_route_p privdata;
+	
+	/* Initialize private descriptors */
+	privdata = malloc(sizeof(*privdata), M_NETGRAPH_ROUTE, M_WAITOK | M_ZERO);
+	if (privdata == NULL) goto init_error;
+	
+	/* Init tables */
+	if (!rn_inithead((void **)&privdata->table4, OFF_LEN_INET) ||
+		!rn_inithead((void **)&privdata->table6, OFF_LEN_INET6))
+			goto init_error;
+	/* Link structs together; this counts as our one reference to *nodep */
+	NG_NODE_SET_PRIVATE(node, privdata);
+	privdata->node = node;
+	return (0);
+	
 init_error:
-  if (privdata->table4 != NULL)
-    rn_detachhead((void **)&privdata->table4);
-  if (privdata->table6 != NULL)
-    rn_detachhead((void **)&privdata->table6);
-  if (privdata != NULL)
-    free(privdata,M_NETGRAPH_ROUTE);
-  printf("ng_route: failed to init node!\n");
-  return (ENOMEM);
+	if (privdata->table4 != NULL)
+		rn_detachhead((void **)&privdata->table4);
+	if (privdata->table6 != NULL)
+		rn_detachhead((void **)&privdata->table6);
+	if (privdata != NULL)
+		free(privdata,M_NETGRAPH_ROUTE);
+	printf("ng_route: failed to init node!\n");
+	return (ENOMEM);
 }
 
-/*
- * Give our ok for a hook to be added...
- * If we are not running this might kick a device into life.
- * Possibly decode information out of the hook name.
- * Add the hook's private info to the hook structure.
- * (if we had some).
- */
 static int
 ng_route_newhook(node_p node, hook_p hook, const char *name)
 {
-  const ng_route_p ng_routep = NG_NODE_PRIVATE(node);
-  const char *cp;
-  int link = 0;
+	/* Find address of hookinfo struct in node's private data */
+	struct ng_route_hookinfo *hinfo = 
+		ng_route_findhookinfo(node, name);
 
-  if (strncmp(name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0) {
-    char *eptr;
-
-    cp = name + strlen(NG_ROUTE_HOOK_UP);
-    if (!isdigit(*cp))
-      return (EINVAL);
-    link = (int)strtoul(cp, &eptr, 10);
-    if (*eptr != '\0' || link < 0 || link >= NG_ROUTE_MAX_UPLINKS)
-      return (EINVAL);
-
-    ng_routep->up[link].hook = hook;
-    NG_HOOK_SET_PRIVATE(hook, ng_routep->up + link);
-    return (0);
-  } else if (strcmp(name, NG_ROUTE_HOOK_DOWN) == 0) {
-    ng_routep->down.hook = hook;
-    NG_HOOK_SET_PRIVATE(hook, &ng_routep->down);
-  } else if (strcmp(name, NG_ROUTE_HOOK_NOTMATCH) == 0) {
-    ng_routep->notmatch.hook = hook;
-    NG_HOOK_SET_PRIVATE(hook, &ng_routep->notmatch);
-  } else
-    return (EINVAL);	/* not a hook we know about */
-  return(0);
+	/* Completely invalid hookname (all valid names will be always found). */
+	if (!hinfo)
+		return (EINVAL);
+	
+	hinfo->hook = hook;
+	NG_HOOK_SET_PRIVATE(hook, hinfo);
+	
+	return(0);
 }
 
 static int
 ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 {
-  const ng_route_p ng_routep = NG_NODE_PRIVATE(node);
-  struct ng_mesg *resp = NULL;
-  int error = 0;
-  struct ng_mesg *msg;
-
-  NGI_GET_MSG(item, msg);
-  /* Deal with message according to cookie and command */
-  switch (msg->header.typecookie) {
-    case NGM_ROUTE_COOKIE:
-      switch (msg->header.cmd) {
-	case NGM_ROUTE_ADD4:
-	{
-	  error = ng_table_add_entry(ng_routep->table4, msg->data, 4);
-          break;
-	}
-	case NGM_ROUTE_ADD6:
-	{
-	  error = ng_table_add_entry(ng_routep->table6, msg->data, 6);
-          break;
-	}
-        case NGM_ROUTE_DEL4:
-        {
-          error = ng_table_del_entry(ng_routep->table4, msg->data, 4);
-          break;
-        }
-        case NGM_ROUTE_DEL6:
-        {
-          error = ng_table_del_entry(ng_routep->table6, msg->data, 6);
-          break;
-        }
-        case NGM_ROUTE_FLUSH:
-        {
-          if ((error = ng_table_flush(ng_routep->table4))) break;
-          error = ng_table_flush(ng_routep->table6);
-          break;
-        }
-	case NGM_ROUTE_SETFLAGS:
-	  log(LOG_DEBUG, "ng_route: setting direct %u\n",
-	      ((struct ng_route_flags*) msg->data)->direct);
-	  ng_routep->flags = *((struct ng_route_flags*) msg->data);
-	  break;
-	case NGM_ROUTE_GETFLAGS:
-	  NG_MKRESPONSE(resp, msg, sizeof(struct ng_route_flags), M_NOWAIT);
-	  *((struct ng_route_flags*) msg->data) = ng_routep->flags;
-	  break;
+	const ng_route_p ng_routep = NG_NODE_PRIVATE(node);
+	struct ng_mesg *resp = NULL;
+	int error = 0;
+	struct ng_mesg *msg;
+	
+	NGI_GET_MSG(item, msg);
+	/* Deal with message according to cookie and command */
+	switch (msg->header.typecookie) {
+	case NGM_ROUTE_COOKIE:
+		switch (msg->header.cmd) {
+		case NGM_ROUTE_ADD4:
+			error = ng_table_add_entry(ng_routep->table4, msg->data, 4);
+			break;
+		case NGM_ROUTE_ADD6:
+			error = ng_table_add_entry(ng_routep->table6, msg->data, 6);
+			break;
+		case NGM_ROUTE_DEL4:
+			error = ng_table_del_entry(ng_routep->table4, msg->data, 4);
+			break;
+		case NGM_ROUTE_DEL6:
+			error = ng_table_del_entry(ng_routep->table6, msg->data, 6);
+			break;
+		case NGM_ROUTE_FLUSH:
+			if ((error = ng_table_flush(ng_routep->table4))) break;
+			error = ng_table_flush(ng_routep->table6);
+			break;
+		case NGM_ROUTE_SETFLAGS:
+			ng_routep->flags = *((struct ng_route_flags*) msg->data);
+			break;
+		case NGM_ROUTE_GETFLAGS:
+			//if (ng_routep->flags.verbose)
+			NG_MKRESPONSE(resp, msg, sizeof(struct ng_route_flags), M_NOWAIT);
+			*((struct ng_route_flags*) resp->data) = ng_routep->flags;
+			break;
+		default:
+			error = EINVAL;		/* unknown command */
+			break;
+		}
+		break;
 	default:
-	  error = EINVAL;		/* unknown command */
-	  break;
-      }
-      break;
-	default:
-	  error = EINVAL;			/* unknown cookie type */
-	  break;
-  }
-
-  /* Take care of synchronous response, if any */
-  NG_RESPOND_MSG(error, node, item, resp);
-  /* Free the message and return */
-  NG_FREE_MSG(msg);
-  return(error);
+		error = EINVAL;			/* unknown cookie type */
+		break;
+	}
+	
+	/* Take care of synchronous response, if any */
+	NG_RESPOND_MSG(error, node, item, resp);
+	/* Free the message and return */
+	NG_FREE_MSG(msg);
+	return(error);
 }
 
 
@@ -519,34 +489,46 @@ bad:
   return error;
 }
 
+static inline struct ng_route_hookinfo *
+ng_route_findhookinfo(node_p node, const char *name)
+{
+	const ng_route_p ng_routep = NG_NODE_PRIVATE(node);
+	struct ng_route_hookinfo *hinfo;
+	const char *cp;
+	int link = 0;
+	
+	if (strncmp(name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0) {
+		char *eptr;
+		
+		cp = name + strlen(NG_ROUTE_HOOK_UP);
+		if (!isdigit(*cp))
+			return (NULL);
+		link = (int)strtoul(cp, &eptr, 10);
+		if (*eptr != '\0' || link < 0 || link >= NG_ROUTE_MAX_UPLINKS)
+			return (NULL);
+		
+		hinfo = &ng_routep->up[link];
+	} else if (strcmp(name, NG_ROUTE_HOOK_DOWN) == 0) {
+		hinfo = &ng_routep->down;
+	} else if (strcmp(name, NG_ROUTE_HOOK_NOTMATCH) == 0) {
+		hinfo = &ng_routep->notmatch;
+	} else
+		return(NULL);    /* not a hook we know about */
+	return(hinfo);
+}
+
 static hook_p
 ng_route_findhook(node_p node, const char *name)
 {
-  const ng_route_p ng_routep = NG_NODE_PRIVATE(node);
-  hook_p hook = NULL;
-  const char *cp;
-  int link = 0;
+	struct ng_route_hookinfo *hinfo = 
+		ng_route_findhookinfo(node, name);
 
-  if (strncmp(name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0) {
-    char *eptr;
-
-    cp = name + strlen(NG_ROUTE_HOOK_UP);
-    if (!isdigit(*cp))
-      return (NULL);
-    link = (int)strtoul(cp, &eptr, 10);
-    if (*eptr != '\0' || link < 0 || link >= NG_ROUTE_MAX_UPLINKS)
-      return (NULL);
-
-    hook = ng_routep->up[link].hook;
-  } else if (strcmp(name, NG_ROUTE_HOOK_DOWN) == 0) {
-    hook = ng_routep->down.hook;
-  } else if (strcmp(name, NG_ROUTE_HOOK_NOTMATCH) == 0) {
-    hook = ng_routep->notmatch.hook;
-  } else
-    return(NULL);    /* not a hook we know about */
-  return(hook);
+	if (hinfo) {
+		return hinfo->hook;
+	} else {
+		return NULL;
+	}
 }
-
 static int
 ng_route_shutdown(node_p node)
 {
