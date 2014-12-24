@@ -52,6 +52,9 @@
 #include <sys/ctype.h>
 #include <sys/errno.h>
 #include <sys/syslog.h>
+#include <sys/types.h>
+#include <machine/atomic.h>
+
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
@@ -159,7 +162,7 @@ static const struct ng_parse_type ng_route_tuple6_type = {
 struct ng_parse_struct_field ng_route_flags_fields[] = {
 	/* indicating matching direction: source (1) or destination (0) address */
 	{ "direct",	&ng_parse_int8_type },
-	{ "verose",	&ng_parse_int8_type },
+	{ "verbose",	&ng_parse_int8_type },
 	{ "debug",	&ng_parse_int8_type },
 	{ NULL }
 };
@@ -245,18 +248,18 @@ NETGRAPH_INIT(route, &typestruct);
  */
 struct ng_route_hookinfo {
 	hook_p	hook;
-	struct ng_route_hookstat
+	struct ng_route_hookstat stats;
 };
 
 /* Information we store for each node */
 struct ng_route {
-	struct 	 ng_route_hookinfo up[NG_ROUTE_MAX_UPLINKS];
-	struct 	 ng_route_hookinfo down;
-	struct         ng_route_hookinfo notmatch;
-	node_p	 node;		/* back pointer to node */
-	struct ng_route_flags flags;
-	struct radix_node_head *table4;
-	struct radix_node_head *table6;
+	struct  ng_route_hookinfo up[NG_ROUTE_MAX_UPLINKS];
+	struct  ng_route_hookinfo down;
+	struct	ng_route_hookinfo notmatch;
+	node_p	node;		/* back pointer to node */
+	struct	ng_route_flags flags;
+	struct	radix_node_head *table4;
+	struct	radix_node_head *table6;
 };
 typedef struct ng_route *ng_route_p;
 
@@ -411,6 +414,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
   char *hook_name = NG_HOOK_NAME(hook);
   /* For outgoing hook */
   hook_p out_hook;
+
   int error = 0;
   struct mbuf *m;
   struct ether_header *eh;
@@ -419,18 +423,23 @@ ng_route_rcvdata(hook_p hook, item_p item )
   void  *ipaddr;
   u_int32_t num;
 
+  NGI_GET_M(item, m);
+
+  /* Update input hook's statistics */
+  atomic_add_64(
+	  &((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_packets,
+		1);
+  atomic_add_64(
+	  &((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_octets,
+		m->m_pkthdr.len);
+
   if (strncmp(hook_name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0 ||
       strncmp(hook_name, NG_ROUTE_HOOK_NOTMATCH,
               strlen(NG_ROUTE_HOOK_NOTMATCH)) == 0 ) {
     /* Item coming from one of uplink nodes. Just forward it to downlink */
     out_hook = ng_routep->down.hook;
-    /* We don't touch mbuf here, so just forward full item */
-    NG_FWD_ITEM_HOOK(error, item, out_hook);
-    return (0);
   } else if (hook == ng_routep->down.hook) {
     /* Item came from downlink. We need to lookup table to find next hook */
-    NGI_GET_M(item, m);
-
     if ( m->m_len < sizeof(struct ether_header) &&
         (m = m_pullup(m, sizeof(struct ether_header))) == NULL) {
           error=ENOBUFS;
@@ -488,6 +497,17 @@ ng_route_rcvdata(hook_p hook, item_p item )
       goto bad;
 
     NG_FWD_NEW_DATA(error, item, out_hook, m);
+
+    /* Update output hook statistics */
+    if (!error) {
+	atomic_add_64(
+		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(out_hook))->stats.out_packets,
+		1);
+	atomic_add_64(
+		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(out_hook))->stats.out_octets,
+		m->m_pkthdr.len);
+    }
+
     return error; /* On error peer should take care of freeing things */
   } else {
     return (EINVAL);    /* not a hook we know about */
