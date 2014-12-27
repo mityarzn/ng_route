@@ -432,13 +432,8 @@ ng_route_rcvdata(hook_p hook, item_p item )
 	pktlen = m->m_pkthdr.len;
 
 	/* Update input hook's statistics */
-	if (ng_routep->flags.verbose > 1)
-		log(LOG_DEBUG, "ng_route: Trying to update in_packets stats\n");
 	atomic_add_64(
 		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_packets, 1);
-
-	if (ng_routep->flags.verbose > 1)
-		log(LOG_DEBUG, "ng_route: Trying to update in_octets stats\n");
 	atomic_add_64(
 		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_octets, pktlen);
 
@@ -486,6 +481,8 @@ ng_route_rcvdata(hook_p hook, item_p item )
 					log(LOG_DEBUG, "ng_route: found hook number %u\n",num);
 				out_hook = ng_routep->up[num].hook;
 			} else {
+				if (ng_routep->flags.verbose > 1)
+					log(LOG_DEBUG, "ng_route: not found any hook, using 'notmatch'.\n");
 				out_hook = ng_routep->notmatch.hook;
 			}
 		break;
@@ -514,28 +511,25 @@ ng_route_rcvdata(hook_p hook, item_p item )
 		/* Check that output hook exists */
 		if (out_hook == NULL)
 			goto bad;
-
-		NG_FWD_NEW_DATA(error, item, out_hook, m);
-
-		/* Update output hook statistics */
-		if (!error) {
-			if (ng_routep->flags.verbose > 1)
-				log(LOG_DEBUG, "ng_route: Trying to update out_packets stats\n");
-			atomic_add_64(
-				&((struct ng_route_hookinfo *) 
-				 NG_HOOK_PRIVATE(out_hook))->stats.out_packets, 1);
-
-			if (ng_routep->flags.verbose > 1)
-				log(LOG_DEBUG, "ng_route: Trying to update in_octets stats\n");
-			atomic_add_64(
-				&((struct ng_route_hookinfo *)
-				 NG_HOOK_PRIVATE(out_hook))->stats.out_octets, pktlen);
-		}
-
-		return error; /* On error peer should take care of freeing things */
 	} else {
 		return (EINVAL);    /* not a hook we know about */
 	}
+
+	NG_FWD_NEW_DATA(error, item, out_hook, m);
+
+	/* Update output hook statistics */
+	if (!error) {
+		atomic_add_64(
+			&((struct ng_route_hookinfo *) 
+			 NG_HOOK_PRIVATE(out_hook))->stats.out_packets, 1);
+		atomic_add_64(
+			&((struct ng_route_hookinfo *)
+			 NG_HOOK_PRIVATE(out_hook))->stats.out_octets, pktlen);
+	} else
+		if (ng_routep->flags.verbose > 0)
+			log(LOG_DEBUG, "ng_route: error %d forwarding \n",error);
+
+	return error; /* On error peer should take care of freeing things */
 
 bad:
 	NG_FREE_ITEM(item);
