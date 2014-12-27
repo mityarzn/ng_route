@@ -425,20 +425,22 @@ ng_route_rcvdata(hook_p hook, item_p item )
 	struct ip6_hdr *ip6hdr;
 	void  *ipaddr;
 	u_int32_t num;
+	int32_t pktlen;
 	
 	NGI_GET_M(item, m);
-	
+
+	pktlen = m->m_pkthdr.len;
+
 	/* Update input hook's statistics */
 	if (ng_routep->flags.verbose > 1)
 		log(LOG_DEBUG, "ng_route: Trying to update in_packets stats\n");
 	atomic_add_64(
-		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_packets,
-		      1);
+		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_packets, 1);
+
 	if (ng_routep->flags.verbose > 1)
 		log(LOG_DEBUG, "ng_route: Trying to update in_octets stats\n");
 	atomic_add_64(
-		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_octets,
-		      m->m_pkthdr.len);
+		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_octets, pktlen);
 
 	if (ng_routep->flags.verbose > 1)
 		log(LOG_DEBUG, "ng_route: Updated stats, trying to select output hook.\n");
@@ -527,7 +529,7 @@ ng_route_rcvdata(hook_p hook, item_p item )
 				log(LOG_DEBUG, "ng_route: Trying to update in_octets stats\n");
 			atomic_add_64(
 				&((struct ng_route_hookinfo *)
-				 NG_HOOK_PRIVATE(out_hook))->stats.out_octets, m->m_pkthdr.len);
+				 NG_HOOK_PRIVATE(out_hook))->stats.out_octets, pktlen);
 		}
 
 		return error; /* On error peer should take care of freeing things */
