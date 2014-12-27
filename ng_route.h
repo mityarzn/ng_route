@@ -95,7 +95,6 @@ struct ng_route_tuple6 {
 struct ng_route_flags {
   int8_t direct;
   int8_t verbose;
-  int8_t debug;
 };
 
 struct ng_route_entry {

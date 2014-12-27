@@ -165,7 +165,6 @@ struct ng_parse_struct_field ng_route_flags_fields[] = {
 	/* indicating matching direction: source (1) or destination (0) address */
 	{ "direct",	&ng_parse_int8_type },
 	{ "verbose",	&ng_parse_int8_type },
-	{ "debug",	&ng_parse_int8_type },
 	{ NULL }
 };
 static const struct ng_parse_type ng_route_flags_type = {
@@ -381,7 +380,6 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			ng_routep->flags = *((struct ng_route_flags*) msg->data);
 			break;
 		case NGM_ROUTE_GETFLAGS:
-			//if (ng_routep->flags.verbose)
 			NG_MKRESPONSE(resp, msg, sizeof(struct ng_route_flags), M_NOWAIT);
 			*((struct ng_route_flags*) resp->data) = ng_routep->flags;
 			break;
@@ -413,115 +411,134 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 static int
 ng_route_rcvdata(hook_p hook, item_p item )
 {
-  /* Node private data */
-  const ng_route_p ng_routep = NG_NODE_PRIVATE(NG_HOOK_NODE(hook));
-  /* Name of incoming hook */
-  char *hook_name = NG_HOOK_NAME(hook);
-  /* For outgoing hook */
-  hook_p out_hook;
-
-  int error = 0;
-  struct mbuf *m;
-  struct ether_header *eh;
-  struct ip      *ip4hdr;
-  struct ip6_hdr *ip6hdr;
-  void  *ipaddr;
-  u_int32_t num;
-
-  NGI_GET_M(item, m);
-
-  /* Update input hook's statistics */
-  atomic_add_64(
-	  &((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_packets,
-		1);
-  atomic_add_64(
-	  &((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_octets,
-		m->m_pkthdr.len);
-
-  if (strncmp(hook_name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0 ||
-      strncmp(hook_name, NG_ROUTE_HOOK_NOTMATCH,
-              strlen(NG_ROUTE_HOOK_NOTMATCH)) == 0 ) {
-    /* Item coming from one of uplink nodes. Just forward it to downlink */
-    out_hook = ng_routep->down.hook;
-  } else if (hook == ng_routep->down.hook) {
-    /* Item came from downlink. We need to lookup table to find next hook */
-    if ( m->m_len < sizeof(struct ether_header) &&
-        (m = m_pullup(m, sizeof(struct ether_header))) == NULL) {
-          error=ENOBUFS;
-          goto bad;
-    }
-    eh = mtod(m, struct ether_header *);
-
-    /* Determine IP version and lookup corresponding table.
-     * Fallback to notmatch hook if not found in any table or not IP at all. */
-    switch (ntohs(eh->ether_type)) {
-      case ETHERTYPE_IP:
-        if ( m->m_len < sizeof(struct ether_header)+sizeof(struct ip) &&
-           (m = m_pullup(m, sizeof(struct ether_header)+sizeof(struct ip)))
-              == NULL) {
-          error=ENOBUFS;
-          goto bad;
-        }
-        ip4hdr = mtodo(m, ETHER_HDR_LEN);
-	log(LOG_DEBUG, "ng_route: searching direct %u\n",
-	      ng_routep->flags.direct);
-        ipaddr = (ng_routep->flags.direct)
-                      ?(&ip4hdr->ip_src.s_addr):(&ip4hdr->ip_dst.s_addr);
-
-        //log(LOG_DEBUG, "ng_route: looking up address %s\n",inet_ntoa(*(struct in_addr*)ipaddr));
-        /* Lookup */
-        if (ng_table_lookup(ng_routep->table4, ipaddr, 4, &num)) {
-          //log(LOG_DEBUG, "ng_route: found hook number %u\n",num);
-          out_hook = ng_routep->up[num].hook;
-        } else {
-          out_hook = ng_routep->notmatch.hook;
-        }
-        break;
-      case ETHERTYPE_IPV6:
-        if ( m->m_len < sizeof(struct ether_header)+sizeof(struct ip6_hdr) &&
-           (m = m_pullup(m, sizeof(struct ether_header)+sizeof(struct ip6_hdr)))
-              == NULL) {
-          error=ENOBUFS;
-          goto bad;
-        }
-        ip6hdr = mtodo(m, ETHER_HDR_LEN);
-        ipaddr = (ng_routep->flags.direct)?(&ip6hdr->ip6_src):(&ip6hdr->ip6_dst);
-        if (ng_table_lookup(ng_routep->table6, ipaddr, 6, &num)) {
-          out_hook = ng_routep->up[num].hook;
-        } else {
-          out_hook = ng_routep->notmatch.hook;
-        }
-        break;
-      default:
-        //log(LOG_DEBUG, "ng_route: forwarding ethertype 0x%x\n",ntohs(eh->ether_type));
-        /* Not IP or IPv6, send to special hook */
-        out_hook = ng_routep->notmatch.hook;
-    }
-    /* Check that output hook exists */
-    if (out_hook == NULL)
-      goto bad;
-
-    NG_FWD_NEW_DATA(error, item, out_hook, m);
-
-    /* Update output hook statistics */
-    if (!error) {
+	/* Node private data */
+	const ng_route_p ng_routep = NG_NODE_PRIVATE(NG_HOOK_NODE(hook));
+	/* Name of incoming hook */
+	char *hook_name = NG_HOOK_NAME(hook);
+	/* For outgoing hook */
+	hook_p out_hook;
+	
+	int error = 0;
+	struct mbuf *m;
+	struct ether_header *eh;
+	struct ip      *ip4hdr;
+	struct ip6_hdr *ip6hdr;
+	void  *ipaddr;
+	u_int32_t num;
+	
+	NGI_GET_M(item, m);
+	
+	/* Update input hook's statistics */
+	if (ng_routep->flags.verbose > 1)
+		log(LOG_DEBUG, "ng_route: Trying to update in_packets stats\n");
 	atomic_add_64(
-		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(out_hook))->stats.out_packets,
-		1);
+		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_packets,
+		      1);
+	if (ng_routep->flags.verbose > 1)
+		log(LOG_DEBUG, "ng_route: Trying to update in_octets stats\n");
 	atomic_add_64(
-		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(out_hook))->stats.out_octets,
-		m->m_pkthdr.len);
-    }
+		&((struct ng_route_hookinfo *) NG_HOOK_PRIVATE(hook))->stats.in_octets,
+		      m->m_pkthdr.len);
 
-    return error; /* On error peer should take care of freeing things */
-  } else {
-    return (EINVAL);    /* not a hook we know about */
-  }
+	if (ng_routep->flags.verbose > 1)
+		log(LOG_DEBUG, "ng_route: Updated stats, trying to select output hook.\n");
+	if (strncmp(hook_name, NG_ROUTE_HOOK_UP, strlen(NG_ROUTE_HOOK_UP)) == 0 ||
+		strncmp(hook_name, NG_ROUTE_HOOK_NOTMATCH,
+			strlen(NG_ROUTE_HOOK_NOTMATCH)) == 0 ) {
+		if (ng_routep->flags.verbose > 1)
+			log(LOG_DEBUG, "ng_route: Output hook is 'down'\n");
+		/* Item coming from one of uplink nodes. Just forward it to downlink */
+		out_hook = ng_routep->down.hook;
+	} else if (hook == ng_routep->down.hook) {
+		/* Item came from downlink. We need to lookup table to find next hook */
+		if ( m->m_len < sizeof(struct ether_header) &&
+			(m = m_pullup(m, sizeof(struct ether_header))) == NULL) {
+			error=ENOBUFS;
+			goto bad;
+		}
+		eh = mtod(m, struct ether_header *);
+			/* Determine IP version and lookup corresponding table.
+		 * Fallback to notmatch hook if not found in any table or not IP at all. */
+		switch (ntohs(eh->ether_type)) {
+		case ETHERTYPE_IP:
+			if ( m->m_len < sizeof(struct ether_header)+sizeof(struct ip) &&
+				(m = m_pullup(m, sizeof(struct ether_header)+sizeof(struct ip)))
+				== NULL) {
+					error=ENOBUFS;
+					goto bad;
+			}
+			ip4hdr = mtodo(m, ETHER_HDR_LEN);
+			if (ng_routep->flags.verbose > 0)
+				log(LOG_DEBUG, "ng_route: searching direct %u\n",
+				    ng_routep->flags.direct);
+			ipaddr = (ng_routep->flags.direct)
+				?(&ip4hdr->ip_src.s_addr):(&ip4hdr->ip_dst.s_addr);
+
+			if (ng_routep->flags.verbose > 0)
+				log(LOG_DEBUG, "ng_route: looking up address %s\n",
+				    inet_ntoa(*(struct in_addr*)ipaddr));
+			
+			/* Lookup */
+			if (ng_table_lookup(ng_routep->table4, ipaddr, 4, &num)) {
+				if (ng_routep->flags.verbose > 0)
+					log(LOG_DEBUG, "ng_route: found hook number %u\n",num);
+				out_hook = ng_routep->up[num].hook;
+			} else {
+				out_hook = ng_routep->notmatch.hook;
+			}
+		break;
+		case ETHERTYPE_IPV6:
+			if ( m->m_len < sizeof(struct ether_header)+sizeof(struct ip6_hdr) &&
+				(m = m_pullup(m, sizeof(struct ether_header)+sizeof(struct ip6_hdr)))
+				== NULL) {
+					error=ENOBUFS;
+					goto bad;
+			}
+			ip6hdr = mtodo(m, ETHER_HDR_LEN);
+			ipaddr = (ng_routep->flags.direct)?(&ip6hdr->ip6_src):(&ip6hdr->ip6_dst);
+			if (ng_table_lookup(ng_routep->table6, ipaddr, 6, &num)) {
+				out_hook = ng_routep->up[num].hook;
+			} else {
+				out_hook = ng_routep->notmatch.hook;
+			}
+		break;
+		default:
+			if (ng_routep->flags.verbose > 1)
+				log(LOG_DEBUG, "ng_route: forwarding ethertype 0x%x\n",
+				    ntohs(eh->ether_type));
+			/* Not IP or IPv6, send to special hook */
+			out_hook = ng_routep->notmatch.hook;
+		}
+		/* Check that output hook exists */
+		if (out_hook == NULL)
+			goto bad;
+
+		NG_FWD_NEW_DATA(error, item, out_hook, m);
+
+		/* Update output hook statistics */
+		if (!error) {
+			if (ng_routep->flags.verbose > 1)
+				log(LOG_DEBUG, "ng_route: Trying to update out_packets stats\n");
+			atomic_add_64(
+				&((struct ng_route_hookinfo *) 
+				 NG_HOOK_PRIVATE(out_hook))->stats.out_packets, 1);
+
+			if (ng_routep->flags.verbose > 1)
+				log(LOG_DEBUG, "ng_route: Trying to update in_octets stats\n");
+			atomic_add_64(
+				&((struct ng_route_hookinfo *)
+				 NG_HOOK_PRIVATE(out_hook))->stats.out_octets, m->m_pkthdr.len);
+		}
+
+		return error; /* On error peer should take care of freeing things */
+	} else {
+		return (EINVAL);    /* not a hook we know about */
+	}
 
 bad:
-  NG_FREE_ITEM(item);
-  NG_FREE_M(m);
-  return error;
+	NG_FREE_ITEM(item);
+	NG_FREE_M(m);
+	return error;
 }
 
 static inline struct ng_route_hookinfo *
