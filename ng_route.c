@@ -386,6 +386,8 @@ ng_route_rcvmsg(node_p node, item_p item, hook_p lasthook)
 		case NGM_ROUTE_GETSTATS:
 			hinfo = ng_route_findhookinfo(node, 
 					((struct ng_route_hookname *)msg->data)->name);
+			if (!hinfo)
+				break;
 			
 			NG_MKRESPONSE(resp, msg, sizeof(struct ng_route_hookstats), M_NOWAIT);
 			*((struct ng_route_hookstats*) resp->data) = hinfo->stats;
