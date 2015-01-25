@@ -53,7 +53,10 @@
 #include <sys/errno.h>
 #include <sys/syslog.h>
 #include <sys/types.h>
+#include <sys/socket.h>
 #include <machine/atomic.h>
+
+#include <machine/stdarg.h> /* For va_list in ipv6 parsing */
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -79,9 +82,9 @@ static MALLOC_DEFINE(M_NETGRAPH_ROUTE, "netgraph_route", "netgraph route node");
 /* zone for storing ngpl_hdr-s */
 static uma_zone_t ngr_zone;
 
-#define NG_ROUTE_MAX_UPLINKS 1048576 /* It results in 8-megabyte (x86_64) array
+#define NG_ROUTE_MAX_UPLINKS 1048576 /* It results in 40-megabyte (x86_64) array
 				      * in node's private info. That's many,
-				      * maybe we shold move it to hashtable. */
+				      * we shold move it to {radix|hash}table. */
 
 /* Next 8 #defines was fully copied from ip_fw_table.c */
 #define KEY_LEN(v)      *((uint8_t *)&(v))
@@ -139,18 +142,103 @@ static const struct ng_parse_type ng_route_tuple4_type = {
 
 // Anything for IPv6 tuple
 static int
-ng_route_tuple6_getLength(const struct ng_parse_type *type,
-			  const u_char *start, const u_char *buf)
+ng_parse_append(char **cbufp, int *cbuflenp, const char *fmt, ...)
 {
-	return 16;
+        va_list args;
+        int len;
+
+        va_start(args, fmt);
+        len = vsnprintf(*cbufp, *cbuflenp, fmt, args);
+        va_end(args);
+        if (len >= *cbuflenp)
+                return ERANGE;
+        *cbufp += len;
+        *cbuflenp -= len;
+
+        return (0);
 }
-static const struct ng_parse_type ng_route_ip6addr_type = {
-	&ng_parse_bytearray_type,
-	&ng_route_tuple6_getLength
+static int
+ng_ip6addr_parse(const struct ng_parse_type *type,
+        const char *s, int *off, const u_char *const start,
+        u_char *const buf, int *buflen)
+{
+	int i = 0;
+	struct in6_addr addr;		/* Address in binary form */
+	char saddr[INET6_ADDRSTRLEN+1];	/* Address in text form */
+	bzero(saddr,INET6_ADDRSTRLEN);
+
+	/* Check buflen */
+	if (*buflen < sizeof(struct in6_addr))
+		return ERANGE;
+
+	/* Copy chars from source array to ours temporary while there's hex
+	 * digits or colons. */
+	while (isxdigit(s[*off]) || s[*off] == ':')
+	{
+		saddr[i] = s[*off];
+		i++; (*off)++;
+		if (i>INET6_ADDRSTRLEN) 
+			return E2BIG;
+	}
+
+	log(LOG_DEBUG, "ng_route: Trying to parse address %s\n", saddr);
+
+	if (1 != inet_pton(AF_INET6, saddr, &addr))
+		return EINVAL;
+
+	bcopy(&addr, buf, sizeof(addr));
+	*buflen = sizeof(addr);
+	log(LOG_DEBUG, "ng_route: Parsed successfully\n");
+	
+	return 0;
+}
+
+static int
+ng_ip6addr_unparse(const struct ng_parse_type *type,
+        const u_char *data, int *off, char *cbuf, int cbuflen)
+{
+	int error;
+	char saddr[INET6_ADDRSTRLEN+1];	/* Address in text form */
+
+	/* Check buflen */
+	if (cbuflen < INET6_ADDRSTRLEN)
+		return ERANGE;
+
+	if (!inet_ntop(AF_INET6, data+*off, saddr, INET6_ADDRSTRLEN))
+		return EINVAL;
+
+	if ((error = ng_parse_append(&cbuf, &cbuflen, saddr)) != 0)
+		return (error);
+	
+	(*off) += sizeof(struct in6_addr);
+	return 0;
+}
+
+static int
+ng_ip6addr_getDefault(const struct ng_parse_type *type,
+        const u_char *const start, u_char *buf, int *buflen)
+{
+        struct in6_addr ip  = { .__u6_addr.__u6_addr32 = {0, 0, 0, 0 }};
+ 
+        if (*buflen < sizeof(ip))
+                return (ERANGE);
+        bcopy(&ip, buf, sizeof(ip));
+        *buflen = sizeof(ip);
+        return (0);
+}
+
+static const struct ng_parse_type ng_parse_ip6addr_type = {
+	NULL,
+	NULL,
+	NULL,
+	ng_ip6addr_parse,
+	ng_ip6addr_unparse,
+	ng_ip6addr_getDefault,
+	0	
 };
 struct ng_parse_struct_field ng_route_tuple6_fields[] = {
-	{ "addr",	&ng_route_ip6addr_type },
-	{ "mask",	&ng_route_ip6addr_type },
+	{ "addr",	&ng_parse_ip6addr_type },
+	{ "mask",	&ng_parse_ip6addr_type },
 	{ "value",	&ng_parse_int32_type   },
 	{ NULL }
 };
@@ -539,6 +627,11 @@ bad:
 	return error;
 }
 
+/* 
+ * Find hookinfo in node's private data byname.
+ * It's always found because all hookinfos are aprts of node's private data.
+ * Returns NULL only for invalid hook names, otherwise pointer to hookinfo.
+ */
 static inline struct ng_route_hookinfo *
 ng_route_findhookinfo(node_p node, const char *name)
 {
@@ -567,6 +660,9 @@ ng_route_findhookinfo(node_p node, const char *name)
 	return(hinfo);
 }
 
+/*
+ * Find hook by name. Returns hook pointer or NULL on failure.
+ */
 static hook_p
 ng_route_findhook(node_p node, const char *name)
 {
@@ -579,6 +675,8 @@ ng_route_findhook(node_p node, const char *name)
 		return NULL;
 	}
 }
+
+/* Free node's data before shutdown */
 static int
 ng_route_shutdown(node_p node)
 {
@@ -631,6 +729,8 @@ ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type)
   struct ng_route_entry *ent = uma_zalloc(ngr_zone, M_WAITOK | M_ZERO);
   struct radix_node *rn;
   struct sockaddr *addr_ptr, *mask_ptr;
+  char logaddrbuf[INET6_ADDRSTRLEN+1];
+
 
   switch (type) {
     case 4:
@@ -639,8 +739,7 @@ ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type)
       struct ng_route_tuple4 *newent = entry;
       ent->a.addr4.sin_addr = newent->addr;
       ent->m.mask4.sin_addr = newent->mask;
-      /*log(LOG_DEBUG, "Adding address %s ", inet_ntoa(ent->a.addr4.sin_addr));
-      log(LOG_DEBUG, "mask %s\n",          inet_ntoa(ent->m.mask4.sin_addr));*/
+
       ent->value = newent->value;
       addr_ptr = (struct sockaddr *) &ent->a.addr4;
       mask_ptr = (struct sockaddr *) &ent->m.mask4;
@@ -651,7 +750,11 @@ ng_table_add_entry(struct radix_node_head *rnh, void *entry, int type)
       KEY_LEN(ent->m.mask6) = KEY_LEN_INET6;
       struct ng_route_tuple6 *newent6 = entry;
       ent->a.addr6.sin6_addr = newent6->addr;
+      inet_ntop(AF_INET6, &newent6->addr, logaddrbuf, INET6_ADDRSTRLEN);
+      log(LOG_DEBUG, "ng_route: add addr %s\n", logaddrbuf);
       ent->m.mask6.sin6_addr = newent6->mask;
+      inet_ntop(AF_INET6, &newent6->mask, logaddrbuf, INET6_ADDRSTRLEN);
+      log(LOG_DEBUG, "ng_route: add mask %s\n", logaddrbuf);
       ent->value = newent6->value;
       addr_ptr = (struct sockaddr *) &ent->a.addr6;
       mask_ptr = (struct sockaddr *) &ent->m.mask6;
